@@ -12,6 +12,7 @@
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -178,22 +179,173 @@ def status_info():
     }
 
 
+# ---------------- 模拟器 adb 端口探测 ----------------
+# 各家模拟器的 adb 端口：MuMu 12 默认 16384（但会随实例/占用漂移到 16416、16448…），
+# 同时也保留老的 7555；雷电 5555 起；夜神 62001 起；逍遥 21503 起。
+KNOWN_ADB_PORTS = [
+    16384, 16416, 16448, 7555, 7556, 7557, 5555, 5557, 5556,
+    62001, 62025, 62026, 21503, 21513,
+]
+EMU_PROC_KEYWORDS = (
+    'mumu', 'nemu', 'ldvbox', 'dnplayer', 'ldplayer', 'ld9', 'nox',
+    'hd-player', 'memu', 'bluestacks', 'qemu', 'vboxheadless',
+)
+DEV_CACHE = {'t': 0.0, 'ports': []}
+
+
+def _adb_raw(*args, timeout=15):
+    """跑一条 adb 命令，只返回 stdout（失败返回空串，不抛）。"""
+    try:
+        p = subprocess.run([ADB] + list(args), capture_output=True, text=True,
+                           encoding='utf-8', errors='replace', timeout=timeout,
+                           creationflags=CREATE_NO_WINDOW)
+        return p.stdout or ''
+    except Exception:
+        return ''
+
+
+def _list_devices():
+    devs = []
+    for ln in (_adb_raw('devices') or '').splitlines():
+        ln = ln.strip()
+        if not ln or ln.lower().startswith('list of devices'):
+            continue
+        parts = ln.split()
+        if len(parts) >= 2:
+            devs.append({'serial': parts[0], 'state': parts[1]})
+    return devs
+
+
+def _listening_by_pid():
+    """{pid: [port, ...]}，只取本机 TCP LISTENING。"""
+    res = {}
+    if os.name != 'nt':
+        return res
+    try:
+        out = subprocess.run(['netstat', '-ano', '-p', 'TCP'], capture_output=True,
+                             text=True, encoding='utf-8', errors='replace',
+                             timeout=10, creationflags=CREATE_NO_WINDOW).stdout or ''
+    except Exception:
+        return res
+    for ln in out.splitlines():
+        parts = ln.split()
+        if len(parts) < 5 or parts[-2].upper() != 'LISTENING':
+            continue
+        port = parts[1].rsplit(':', 1)[-1]
+        pid = parts[-1]
+        if port.isdigit() and pid.isdigit():
+            res.setdefault(int(pid), []).append(int(port))
+    return res
+
+
+def _pid_names(pids):
+    names = {}
+    if not pids or os.name != 'nt':
+        return names
+    try:
+        out = subprocess.run(['tasklist', '/FO', 'CSV', '/NH'], capture_output=True,
+                             text=True, encoding='utf-8', errors='replace',
+                             timeout=10, creationflags=CREATE_NO_WINDOW).stdout or ''
+    except Exception:
+        return names
+    for ln in out.splitlines():
+        cols = [c.strip().strip('"') for c in ln.split('","')]
+        if len(cols) < 2 or not cols[1].isdigit():
+            continue
+        pid = int(cols[1])
+        if pid in pids:
+            names[pid] = cols[0].lower()
+    return names
+
+
+def _emu_ports():
+    """从模拟器进程名反查它到底监听哪个端口（MuMu 12 端口会漂移，不能写死）。
+    只保留 adb 端口常见段：模拟器还有一堆内部服务端口（7875/14221/23596…），
+    拿去 adb connect 会一直卡到超时，能把「重新检测」拖成一分钟。"""
+    if os.name != 'nt':
+        return []
+    now = time.time()
+    if now - DEV_CACHE['t'] < 15:          # 15 秒内复用，避免连点「重新检测」反复扫
+        return DEV_CACHE['ports']
+    ranges = ((5000, 5600), (7555, 7600), (16384, 16600),
+              (21500, 21600), (62000, 62100))
+    ports = []
+    try:
+        by_pid = _listening_by_pid()
+        names = _pid_names(set(by_pid))
+        for pid, plist in by_pid.items():
+            nm = names.get(pid, '')
+            if not nm or not any(k in nm for k in EMU_PROC_KEYWORDS):
+                continue
+            for p in plist:
+                if p == DEFAULT_PORT or p == 5037 or p in ports:
+                    continue
+                if any(a <= p <= b for a, b in ranges):
+                    ports.append(p)
+    except Exception:
+        ports = []
+    DEV_CACHE.update(t=now, ports=ports)
+    return ports
+
+
+def _tcp_open(port, timeout=0.2):
+    """秒级探一下端口是否在监听：关着的端口立刻失败，别交给 adb 去等握手超时。"""
+    s = socket.socket()
+    s.settimeout(timeout)
+    try:
+        s.connect(('127.0.0.1', port))
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def _connect_many(ports, timeout=5):
+    """并行 connect：挨个连的话，几个连不通的端口就能把界面卡住半分钟。"""
+    threads = []
+    for p in ports:
+        t = threading.Thread(target=_adb_raw,
+                             args=('connect', '127.0.0.1:%d' % p),
+                             kwargs={'timeout': timeout}, daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(timeout + 2)
+
+
 def devices_info():
     if not os.path.isfile(ADB):
         return {'ok': False, 'error': '内置 adb 缺失', 'devices': []}
     try:
-        p = subprocess.run([ADB, 'devices'], capture_output=True, text=True,
-                           encoding='utf-8', errors='replace', timeout=15,
-                           creationflags=CREATE_NO_WINDOW)
-        devs = []
-        for ln in (p.stdout or '').splitlines():
-            ln = ln.strip()
-            if not ln or ln.lower().startswith('list of devices'):
-                continue
-            parts = ln.split()
-            if len(parts) >= 2:
-                devs.append({'serial': parts[0], 'state': parts[1]})
-        return {'ok': True, 'devices': devs}
+        _adb_raw('start-server', timeout=20)
+        devs = _list_devices()
+        if not any(d['state'] == 'device' for d in devs):
+            # 以前这里只列 adb 已有的设备、从不主动 connect，
+            # 于是模拟器明明开着也显示「未检测到」——补上主动探测。
+            cands = []
+            for p in _emu_ports() + KNOWN_ADB_PORTS:
+                if p not in cands and _tcp_open(p):
+                    cands.append(p)
+            if cands:
+                _connect_many(cands)
+                devs = _list_devices()
+                # 扫出来的 offline 条目会污染界面，顺手清掉
+                for d in devs:
+                    if d['state'] != 'device':
+                        _adb_raw('disconnect', d['serial'], timeout=4)
+                devs = _list_devices()
+        devs.sort(key=lambda d: (d['state'] != 'device', d['serial']))
+        # offline 基本都是扫描时连到非 adb 端口留下的僵尸条目，别让它污染界面；
+        # unauthorized 保留，那是真设备、只是没点「允许调试」。
+        devs = [d for d in devs if d['state'] != 'offline']
+        ports = sorted({int(d['serial'].rsplit(':', 1)[-1])
+                        for d in devs if d['serial'].startswith('127.0.0.1:')
+                        and d['serial'].rsplit(':', 1)[-1].isdigit()})
+        return {'ok': True, 'devices': devs, 'ports': ports}
     except Exception as e:
         return {'ok': False, 'error': str(e), 'devices': []}
 

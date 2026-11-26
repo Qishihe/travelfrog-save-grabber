@@ -123,11 +123,47 @@ def find_adb():
     return found
 
 
+def _emu_listening_ports():
+    """反查模拟器进程监听的端口：MuMu 12 的 adb 端口会从 16384 漂到 16416 等，
+    写死端口表在真机上经常扑空。Windows 下用 netstat + tasklist，其它平台跳过。"""
+    if os.name != 'nt':
+        return []
+    keys = ('mumu', 'nemu', 'ldvbox', 'dnplayer', 'ldplayer', 'ld9',
+            'nox', 'hd-player', 'memu', 'bluestacks', 'qemu', 'vboxheadless')
+    try:
+        out = subprocess.run(['netstat', '-ano', '-p', 'TCP'], capture_output=True,
+                             timeout=10).stdout.decode('utf-8', 'replace')
+        tl = subprocess.run(['tasklist', '/FO', 'CSV', '/NH'], capture_output=True,
+                            timeout=10).stdout.decode('utf-8', 'replace')
+    except Exception:
+        return []
+    names = {}
+    for ln in tl.splitlines():
+        c = [x.strip().strip('"') for x in ln.split('","')]
+        if len(c) >= 2 and c[1].isdigit():
+            names[int(c[1])] = c[0].lower()
+    ports = []
+    for ln in out.splitlines():
+        f = ln.split()
+        if len(f) < 5 or f[-2].upper() != 'LISTENING':
+            continue
+        port, pid = f[1].rsplit(':', 1)[-1], f[-1]
+        if not (port.isdigit() and pid.isdigit()):
+            continue
+        if any(k in names.get(int(pid), '') for k in keys):
+            p = int(port)
+            if 5000 <= p <= 50000 and p != 5037 and p not in ports:
+                ports.append(p)
+    return ports
+
+
 def detect_serial(want_port=None):
     run([ADB[0], 'start-server'])
-    # 只连目标端口（默认 16384），不把所有端口都 connect 上——
-    # 多实例时全连会导致 root 状态串线、挑错机器。
-    ports = [want_port] if want_port else ['16384', '7555', '5555', '62001']
+    # 手动指定端口就只连它；否则先按已知端口挨个试，最后一轮才连「模拟器进程占用的端口」——
+    # 多实例时全连会导致 root 状态串线、挑错机器，所以已知端口只连真正能执行命令的那个。
+    known = ['16384', '16416', '16448', '7555', '5557', '5555', '5556',
+             '62001', '62025', '21503']
+    ports = [want_port] if want_port else known
     for p in ports:
         target = '127.0.0.1:%s' % p
         run([ADB[0], 'connect', target])
@@ -135,6 +171,16 @@ def detect_serial(want_port=None):
         # 这个端口要真的能执行命令（装了游戏）才算数
         if rc == 0 and ('aligames' in dev or 'croak' in dev):
             return target
+    # 端口漂移：按模拟器进程反查到的端口再试一遍
+    if not want_port:
+        for p in _emu_listening_ports():
+            if str(p) in ports:
+                continue
+            target = '127.0.0.1:%d' % p
+            run([ADB[0], 'connect', target])
+            rc, dev = run([ADB[0], '-s', target, 'shell', 'pm list packages'])
+            if rc == 0 and ('aligames' in dev or 'croak' in dev):
+                return target
     # 退而求其次：任何一个在线设备
     rc, out = run([ADB[0], 'devices'])
     online = [l.split()[0] for l in out.splitlines() if '\tdevice' in l]

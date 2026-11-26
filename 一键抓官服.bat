@@ -20,6 +20,11 @@ echo   If BOTH servers are installed, both are grabbed in turn.
 echo   After it finishes, restart the game once to restore network.
 echo.
 
+rem ---- integrity check: loose files alone can never work ----
+if not exist "%PKG%scripts\grab_official.py" goto :incomplete
+if not exist "%PKG%web\index.html" goto :incomplete
+if not exist "%PKG%tools\platform-tools\adb.exe" goto :incomplete
+
 set "PY=%PKG%runtime\python\python.exe"
 if exist "%PY%" goto :run
 
@@ -47,6 +52,25 @@ echo.
 if "%RC%" NEQ "0" goto :fail
 echo Done. Check output folder timestamped subdir for the save.
 goto :end
+
+:incomplete
+echo ------------------------------------------------------------
+echo  [X] PACKAGE INCOMPLETE - required folders are missing:
+for %%F in (scripts web tools) do if not exist "%PKG%%%F\" echo        - %%F\
+echo.
+echo  This folder only contains loose files. The grabber needs the
+echo  FULL portable package: runtime\ + scripts\ + tools\ + web\.
+echo.
+echo  HOW TO FIX:
+echo    1. Unzip TravelFrogGrabber_v1.0_setup.zip completely
+echo       (right-click - Extract All). Do NOT copy single files.
+echo    2. Open the extracted TravelFrogGrabber folder.
+echo    3. Run the bat inside THAT folder.
+echo.
+echo  Or double-click the installer bat inside the extracted folder.
+echo ------------------------------------------------------------
+pause
+exit /b 1
 
 :fail
 echo ------------------------------------------------------------
