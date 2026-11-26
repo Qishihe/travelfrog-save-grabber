@@ -11,11 +11,21 @@
 """
 
 # 本进程加过的「全量 443」规则，退出时要知道删哪条
+import re
+
 ALL_ON = [False]
 
 
 def _ip_from_hex(h):
-    """把 /proc/net/tcp 里 8 位小端十六进制转成点分 IP。"""
+    """把 /proc/net/tcp 里的十六进制地址转成点分 IP。
+
+    tcp 表是 8 位小端；tcp6 表是 32 位，且 Android 上大量连接是 IPv4-mapped
+    （0000000000000000FFFF0000 + 4 字节），这里一并还原，否则会漏掉一大半连接。
+    """
+    if len(h) == 32:
+        if h[:24].upper() != '0000000000000000FFFF0000':
+            return ''                     # 真 IPv6，不处理
+        h = h[24:]
     if len(h) != 8:
         return ''
     try:
@@ -26,11 +36,15 @@ def _ip_from_hex(h):
 
 
 def tcp_targets(text):
-    """解析 /proc/net/tcp，返回远端的 [(ip, port)]（已按出现顺序去重）。"""
+    """解析 /proc/net/tcp(6)，返回 [(ip, port, uid)]（按出现顺序去重）。
+
+    uid 用来区分「游戏自己连的」和「其它 App/系统连的」，补劫持时只动游戏那几条，
+    免得把系统流量也拽进代理。
+    """
     out, seen = [], set()
     for ln in (text or '').splitlines()[1:]:
         f = ln.split()
-        if len(f) < 4:
+        if len(f) < 8:
             continue
         rem = f[2]
         if ':' not in rem:
@@ -39,11 +53,12 @@ def tcp_targets(text):
         ip = _ip_from_hex(ip_h)
         try:
             port = int(port_h, 16)
+            uid = int(f[7])
         except ValueError:
             continue
-        if ip and (ip, port) not in seen:
-            seen.add((ip, port))
-            out.append((ip, port))
+        if ip and (ip, port, uid) not in seen:
+            seen.add((ip, port, uid))
+            out.append((ip, port, uid))
     return out
 
 
@@ -51,14 +66,30 @@ def _is_local(ip):
     return ip.startswith(('10.', '127.', '0.', '169.254.'))
 
 
-def real_web_ips(sh, dport=443):
-    """模拟器里当前真正连着的公网 443 目标。游戏还没连上时返回空列表。"""
+def pkg_uid(sh, pkg):
+    """取应用 uid（/proc/net/tcp 里的 uid 列就是它）。拿不到返回 None。"""
+    try:
+        txt = sh("dumpsys package %s | grep -m1 userId=" % pkg)
+        m = re.search(r'userId=(\d+)', txt or '')
+        return int(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
+def real_web_ips(sh, dport=443, uid=None):
+    """模拟器里当前真正连着的公网 443 目标。
+
+    uid 给了就只算这个应用连的；游戏还没连上时返回空列表。
+    """
     ips = []
     for f in ('/proc/net/tcp', '/proc/net/tcp6'):
         txt = sh('cat %s 2>/dev/null' % f)
-        for ip, port in tcp_targets(txt):
-            if port == dport and not _is_local(ip) and ip not in ips:
-                ips.append(ip)
+        for ip, port, u in tcp_targets(txt):
+            if port != dport or _is_local(ip) or ip in ips:
+                continue
+            if uid is not None and u != uid:
+                continue
+            ips.append(ip)
     return ips
 
 
@@ -139,13 +170,13 @@ def log_stats(path):
     return conns, mitm
 
 
-def report(sh, ips, host_port, proxy_log):
+def report(sh, ips, host_port, proxy_log, uid=None):
     """把整条链的三环都探一遍，打印人话结论。返回 (可达, 真实IP列表)。"""
     ok, detail = probe(sh, host_port)
     print('   [诊断] 模拟器 -> 宿主 %s：%s'
           % (host_port, '通' if ok else '不通（%s）' % (detail or '无响应')))
 
-    real = real_web_ips(sh)
+    real = real_web_ips(sh, uid=uid)
     if real:
         miss = [ip for ip in real if ip not in ips]
         print('   [诊断] 游戏当前连的 443 目标：%s' % ', '.join(real))
