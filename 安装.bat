@@ -39,10 +39,11 @@ if errorlevel 8 (
 
 rem 抓取需要底稿：单独补进 output（历史抓取结果不打包）
 if not exist "%DEST%\output" mkdir "%DEST%\output"
-if exist "%SRC%\output\旅行青蛙存档_官服相册_v37.json" (
-  copy /y "%SRC%\output\旅行青蛙存档_官服相册_v37.json" "%DEST%\output\" >nul
+set "BASEFILE=%SRC%\output\模板文件.json"
+if exist "%BASEFILE%" (
+  copy /y "%BASEFILE%" "%DEST%\output\" >nul
 ) else (
-  echo [!] 警告：缺少底稿 旅行青蛙存档_官服相册_v37.json，抓取可能失败。
+  echo [!] 警告：缺少底稿 模板文件.json，抓取可能失败。
 )
 
 echo [3/4] 创建桌面与开始菜单快捷方式...

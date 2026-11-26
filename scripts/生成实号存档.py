@@ -3,7 +3,7 @@
 
 用法：
   python scripts\\生成实号存档.py --proto lib\\抓取包\\输出\\protocols_ws_20261124 ^
-      --base output\\旅行青蛙存档_官服相册_v37.json --out output\\旅行青蛙存档_实号_20261124.json
+      --base output\\模板文件.json --out output\\旅行青蛙存档_实号_20261124.json
 
   --real-fur     家具 has_fur 用账号真实持有（172）；默认用 v37 全量 399（能摆满）
   --keep-tumbler 不倒翁保留 v37 全量 156；默认换成账号真实的 12

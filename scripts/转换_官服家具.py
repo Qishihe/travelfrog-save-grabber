@@ -34,10 +34,10 @@ courtyardMatDiag/basicStyleGranted 等）一律从 base 存档保留，不被协
 用法：
   # 1) 结构对拍（协议 + v37 参考档）
   python 转换_官服家具.py --proto lib/抓取包/输出/protocols \
-      --base output/旅行青蛙存档_官服相册_v37.json --check
+      --base output/模板文件.json --check
 
   # 2) 全量口径对拍（验证 has_fur 399 重建规则）
-  python 转换_官服家具.py --base output/旅行青蛙存档_官服相册_v37.json --check-full
+  python 转换_官服家具.py --base output/模板文件.json --check-full
 
   # 3) 真用：把你抓到的家具协议写进自己的存档
   python 转换_官服家具.py --proto protocols --base 我的存档.json --out 输出.json

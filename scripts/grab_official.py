@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-"""一键抓官服（也支持米服）存档 —— 双击 一键抓官服.bat 即可，全程无需手动操作。
+"""一键抓官服（也支持米服、华为渠道服）存档 —— 双击 一键抓官服.bat 即可，全程无需手动操作。
 
 做的事（按顺序全自动）：
-  1. 找 adb、自动探测模拟器端口、自动识别包名（官服 com.aligames.lxqw.hhb 优先，米服 com.ali.croak.mi 也认）
+  1. 找 adb、自动探测模拟器端口、自动识别包名（官服 com.aligames.lxqw.hhb 优先，
+     米服 com.ali.croak.mi、华为渠道服 com.Aligames.lxqw.huawei 也认）
   2. 动态解析登录服务器 ali-lxqw-login.ejoy.com 的所有 A 记录（不再写死 IP）
   3. 启动 TLS 中间人代理 ws_proxy.py
   4. 装自签 CA + iptables 把登录服务器 443 重定向到代理
   5. 强制重启游戏触发全量登录，自动点「进入游戏」；可选补抓相册图层
+     —— 华为渠道服走 huawei_channel：自动过隐私协议/联运声明/启动页勾选；
+        若弹华为账号登录页则明确报错，等你手动登录后重跑
   6. 盯着抓包目录，等 s2c 数据稳定后停手
   7. 还原环境（撤 iptables、卸证书）、停代理
   8. 解析明文帧成协议 JSON，调用 生成实号存档.py 合成可导入存档
@@ -17,7 +20,7 @@
 
 常用参数：
     --port 16384   指定模拟器 adb 端口（默认自动探测 16384/7555/5555/...）
-    --pkg <包名>    指定包名（默认自动识别）
+    --pkg <包名>    指定包名，或写 官服/米服/华为（默认自动识别）
     --clear         清登录态强制全量（大协议更全，但可能需要重新扫码登录）
     --no-album      不补抓相册图层（默认补抓，照片才有伙伴/构图）
     --tap X Y       「进入游戏」按钮坐标（默认 450 1170，按模拟器分辨率调整）
@@ -69,14 +72,30 @@ CA_NAME = '7108b1b3.0'                             # openssl x509 -subject_hash_
 HOST_PROXY = '10.0.2.2:8443'
 LOGIN_HOST = 'ali-lxqw-login.ejoy.com'
 KNOWN_IPS = ['120.79.229.17', '47.106.101.196']    # 兜底：历史 A 记录
-PKGS = ['com.aligames.lxqw.hhb', 'com.ali.croak.mi']  # 官服优先（两个都是官方服）
-PKG_LABEL = {'com.aligames.lxqw.hhb': '阿里官服', 'com.ali.croak.mi': '米服'}
+PKGS = ['com.aligames.lxqw.hhb', 'com.ali.croak.mi', 'com.Aligames.lxqw.huawei']  # 官服/米服优先
+PKG_LABEL = {
+    'com.aligames.lxqw.hhb': '阿里官服',
+    'com.ali.croak.mi': '米服',
+    'com.Aligames.lxqw.huawei': '华为渠道服',
+}
 PKG_ALIAS = {
     '官服': 'com.aligames.lxqw.hhb', 'aligames': 'com.aligames.lxqw.hhb',
     'official': 'com.aligames.lxqw.hhb', 'ali': 'com.aligames.lxqw.hhb',
     '米服': 'com.ali.croak.mi', 'mi': 'com.ali.croak.mi',
+    '华为': 'com.Aligames.lxqw.huawei', 'huawei': 'com.Aligames.lxqw.huawei',
+    'hw': 'com.Aligames.lxqw.huawei',
 }
+# 华为渠道服：启动流程多三道门（隐私协议 / 联运声明 / 启动页勾选），交给 huawei_channel 处理
+HW_PKG = 'com.Aligames.lxqw.huawei'
 PORTS = ['16384', '7555', '5555', '7556', '62001', '62026', '5554']
+
+# 底稿（模板存档）：output 里只留这一个文件，其余才是历史抓取结果
+BASE_TEMPLATE = '模板文件.json'
+
+
+def base_template():
+    """返回底稿路径。"""
+    return os.path.join(ROOT, 'output', BASE_TEMPLATE)
 
 ADB_CANDIDATES = [
     os.environ.get('ADB'),
@@ -157,43 +176,69 @@ def _emu_listening_ports():
     return ports
 
 
-def detect_serial(want_port=None):
+def _devices_online():
+    rc, out = run([ADB[0], 'devices'])
+    return [l.split()[0] for l in out.splitlines() if '\tdevice' in l]
+
+
+def _has_game(serial, want_pkg=None):
+    """这台设备是否可以执行命令、并且装了目标游戏（不装游戏的设备点了也是白点）。"""
+    rc, dev = run([ADB[0], '-s', serial, 'shell', 'pm list packages'])
+    if rc != 0:
+        return False
+    low = (dev or '').lower()
+    if want_pkg:
+        return want_pkg.lower() in low
+    return ('aligames' in low or 'croak' in low)
+
+
+def detect_serial(want_port=None, want_pkg=None):
     run([ADB[0], 'start-server'])
+
+    # 手动指定端口：只认这一个。以前失败后还会 fallback 到「任何在线设备」，
+    # 多开模拟器时会悄悄连到另一台没装华为渠道服的机器上，报「未安装」还查不出原因。
+    if want_port:
+        target = '127.0.0.1:%s' % want_port
+        for _ in range(3):
+            run([ADB[0], 'connect', target], 15)
+            if _has_game(target, want_pkg):
+                return target
+            time.sleep(2)
+        return None
+
     # 手动指定端口就只连它；否则先按已知端口挨个试，最后一轮才连「模拟器进程占用的端口」——
     # 多实例时全连会导致 root 状态串线、挑错机器，所以已知端口只连真正能执行命令的那个。
+    # 自动探测：已知端口 -> 模拟器进程占用的端口 -> 已在线设备
     known = ['16384', '16416', '16448', '7555', '5557', '5555', '5556',
              '62001', '62025', '21503']
-    ports = [want_port] if want_port else known
-    for p in ports:
+    for p in known:
         target = '127.0.0.1:%s' % p
         run([ADB[0], 'connect', target])
-        rc, dev = run([ADB[0], '-s', target, 'shell', 'pm list packages'])
-        # 这个端口要真的能执行命令（装了游戏）才算数
-        if rc == 0 and ('aligames' in dev or 'croak' in dev):
+        if _has_game(target, want_pkg):
             return target
-    # 端口漂移：按模拟器进程反查到的端口再试一遍
-    if not want_port:
-        for p in _emu_listening_ports():
-            if str(p) in ports:
-                continue
-            target = '127.0.0.1:%d' % p
-            run([ADB[0], 'connect', target])
-            rc, dev = run([ADB[0], '-s', target, 'shell', 'pm list packages'])
-            if rc == 0 and ('aligames' in dev or 'croak' in dev):
-                return target
-    # 退而求其次：任何一个在线设备
-    rc, out = run([ADB[0], 'devices'])
-    online = [l.split()[0] for l in out.splitlines() if '\tdevice' in l]
-    return online[0] if online else None
+    for p in _emu_listening_ports():
+        if str(p) in known:
+            continue
+        target = '127.0.0.1:%d' % p
+        run([ADB[0], 'connect', target])
+        if _has_game(target, want_pkg):
+            return target
+    for s in _devices_online():
+        if _has_game(s, want_pkg):
+            return s
+    return None
 
 
 def installed_pkgs():
-    """列出模拟器里已安装的所有官服/米服包名（去重、按 PKGS 顺序）。"""
-    out = sh("pm list packages | grep -E 'aligames|croak'")
+    """列出模拟器里已安装的所有官服/米服/华为渠道服包名（去重、按 PKGS 顺序）。"""
+    # 华为渠道服包名是 com.Aligames.lxqw.huawei（大写 A），不区分大小写才不会漏
+    out = sh("pm list packages | grep -i -E 'aligames|croak'")
     have = set(l.strip().replace('package:', '') for l in out.splitlines() if l.strip())
-    got = [p for p in PKGS if p in have]
+    low = {p.lower(): p for p in have}
+    got = [low[p.lower()] for p in PKGS if p.lower() in low]
+    known = {p.lower() for p in PKGS}
     # 认不出的渠道包（只要带 aligames/croak）也列在后面，交给 --pkg 硬指定
-    got += sorted(p for p in have if p not in PKGS)
+    got += sorted(p for p in have if p.lower() not in known)
     return got
 
 
@@ -275,6 +320,9 @@ def visit_museum():
 
 def restart_game(pkg, clear=False, tap=(450, 1170), timeout=150):
     """强制重启游戏、自动点「进入游戏」，同时等抓包数据稳定。返回本次会话目录列表。"""
+    if pkg.lower().endswith('.huawei'):
+        return restart_game_huawei(pkg, timeout=timeout)
+
     if clear:
         print('   清登录态（可能需要重新扫码）...')
         sp = '/data/data/%s/shared_prefs/ejoysdk.xml' % pkg
@@ -327,6 +375,96 @@ def restart_game(pkg, clear=False, tap=(450, 1170), timeout=150):
         time.sleep(2)
     return [d for d in glob.glob(os.path.join(CAP, '*'))
             if os.path.isdir(d) and os.path.getmtime(d) >= t0 - 3]
+
+
+def _drain_capture(t0, max_wait=90):
+    """等本次会话的 s2c.bin 不再增长（最多 max_wait 秒），返回会话目录列表。"""
+    last_size, last_change = -1, time.time()
+    end = time.time() + max_wait
+    while time.time() < end:
+        sessions = [d for d in glob.glob(os.path.join(CAP, '*'))
+                    if os.path.isdir(d) and os.path.getmtime(d) >= t0 - 3]
+        size, big = 0, None
+        for d in sessions:
+            p = os.path.join(d, 's2c.bin')
+            if os.path.isfile(p):
+                s = os.path.getsize(p)
+                if s > size:
+                    size, big = s, d
+        if size > 0 and size != last_size:
+            last_size, last_change = size, time.time()
+            print('   已抓 %d 字节（%s）' % (size, os.path.basename(big or '')))
+        elif size > 0 and time.time() - last_change >= 8:
+            print('   抓包数据已稳定')
+            break
+        time.sleep(2)
+    return [d for d in glob.glob(os.path.join(CAP, '*'))
+            if os.path.isdir(d) and os.path.getmtime(d) >= t0 - 3]
+
+
+def _hw_precheck(pkg):
+    """华为渠道服抓取前置体检：HMS Core / 登录状态 / CPU ABI。只提示，不阻断。"""
+    try:
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import huawei_channel as hw
+        hw.ADB[0] = ADB[0]
+        hw.SER[0] = SER[0]
+        st = hw.status()
+    except Exception as e:
+        print('   [!] 华为渠道服体检失败：%s' % e)
+        return
+    if not st.get('hms_installed'):
+        print('   [!] 未安装 HMS Core，华为渠道服会卡在「安装 HMS」死循环。')
+        print('       解决：把 hmscore.apk 放到 tools/apk/，或点界面上的「准备华为渠道服」。')
+    if not st.get('account'):
+        print('   [!] 当前没有已登录的华为账号，稍后需要你在模拟器里手动输入账号密码。')
+    abi = st.get('abi') or ''
+    if abi and 'arm' not in abi.lower():
+        print('   [!] 当前 ABI=%s：阿里加固的 x86 库在模拟器上会 SIGSEGV，建议改 armeabi-v7a 重装。' % abi)
+    if st.get('account'):
+        print('   华为账号：%s（HMS=%s，ABI=%s）' % (
+            st['account'], '有' if st.get('hms_installed') else '无', abi or '未知'))
+
+
+def restart_game_huawei(pkg, timeout=150):
+    """华为渠道服专用启动：交给 huawei_channel 处理隐私协议 / 联运声明 / 启动页勾选。
+
+    华为渠道服比官服多三道门，盲点「进入游戏」只会撞在协议页上：
+      1. 首次隐私协议（原生弹窗）
+      2. 华为联运服务声明（HMS 弹窗）
+      3. 启动页底部「我已阅读并同意」复选框（自绘 UI，必须先勾再点进入）
+    """
+    try:
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import huawei_channel as hw
+    except Exception as e:
+        print('   [X] 加载 huawei_channel 失败：%s' % e)
+        return []
+
+    hw.ADB[0] = ADB[0]
+    hw.SER[0] = SER[0]
+    print('   华为渠道服启动流程（自动过协议页；若弹登录页需人工输入）...')
+    t0 = time.time()
+    res = hw.launch(pkg=pkg, timeout=timeout)
+    state = res.get('state') or 'unknown'
+    print('   启动结果：%s' % state)
+    if not res.get('ok'):
+        msg = res.get('message') or res.get('error') or '未知原因'
+        print('   [X] %s' % msg)
+        if state == 'need_login':
+            print('   [!] 请在模拟器窗口里手动输入华为账号密码，登录成功后再点一次「开始抓取」。')
+            print('       想换号可先用界面上的「一键退出华为账号」，再重新登录。')
+        elif state == 'need_hms':
+            print('   [!] 缺 HMS Core：把 hmscore.apk 放到 tools/apk/ 后重试，或点「准备环境」按钮。')
+        elif state == 'register_closed':
+            print('   [!] 该华为账号在本渠道没有历史角色，且服务器已停止新用户注册，换号才能进。')
+        elif state == 'stuck':
+            print('   [!] 游戏停在非预期页面，已截图到 output/ 便于排查。')
+        return []
+
+    return _drain_capture(t0, max_wait=min(120, max(30, timeout // 2)))
 
 
 def size_of_s2c(d):
@@ -416,7 +554,7 @@ def parse_sessions(sessions, proto_dir):
 def main():
     ap = argparse.ArgumentParser(description='一键抓官服/米服存档')
     ap.add_argument('--port', help='模拟器 adb 端口')
-    ap.add_argument('--pkg', help='包名（默认自动识别）')
+    ap.add_argument('--pkg', help='包名，或 官服/米服/华为（默认自动识别）')
     ap.add_argument('--clear', action='store_true', help='清登录态强制全量（可能要重新登录）')
     ap.add_argument('--no-album', action='store_true', help='不补抓相册图层')
     ap.add_argument('--no-museum', action='store_true', help='不自动进博物馆抓真实藏品（默认会抓）')
@@ -434,9 +572,14 @@ def main():
         return 1
     print('adb: %s' % ADB[0])
 
-    SER[0] = detect_serial(a.port)
+    want = PKG_ALIAS.get(str(a.pkg).strip().lower(), a.pkg) if a.pkg else None
+    SER[0] = detect_serial(a.port, want)
     if not SER[0]:
-        print('[X] 连不上模拟器。先打开 MuMu/雷电并启动游戏，或用 --port 指定端口。')
+        if a.port:
+            print('[X] 端口 %s 上没有可用的游戏设备（连不上，或那台没装目标服）。\n'
+                  '    多开模拟器时请确认端口对应的是装了该服的实例。' % a.port)
+        else:
+            print('[X] 连不上模拟器。先打开 MuMu/雷电并启动游戏，或用 --port 指定端口。')
         return 1
     print('设备: %s' % SER[0])
 
@@ -500,6 +643,10 @@ def main():
 
     pkg = packages[0]
     print('包名: %s（%s）' % (pkg, PKG_LABEL.get(pkg, '未知渠道')))
+    if pkg.lower().endswith('.huawei'):
+        _hw_precheck(pkg)
+    if pkg.lower().endswith('.huawei'):
+        _hw_precheck(pkg)
 
     ips = resolve_ips()
     print('登录服务器: %s -> %s' % (LOGIN_HOST, ', '.join(ips)))
@@ -593,7 +740,7 @@ def main():
             pass
         nick = re.sub(r'[\\/:*?"<>|\r\n\t]', '', nick)[:20] or '未知昵称'
         stamp = time.strftime('%Y%m%d_%H%M%S')
-        base = os.path.join(ROOT, 'output', '旅行青蛙存档_官服相册_v37.json')
+        base = base_template()
         out_json = os.path.join(out_dir, '%s旅行青蛙存档_官服抓取_%s.json' % (nick, stamp))
         print('   存档命名：%s' % os.path.basename(out_json))
         rc, out = run([sys.executable, os.path.join(HERE, '生成实号存档.py'),
