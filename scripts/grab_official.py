@@ -292,7 +292,17 @@ def mitm_on(ips):
         try:
             ok, why = diag.probe(sh, HOST_PROXY)
             print('   宿主代理连通性：%s' % ('正常' if ok else '不通（%s）' % why))
-            if not ok:
+            if ok:
+                # 登录服是阿里云 ALB，同一域名会在几十个 IP 之间轮换，实测同一台机器
+                # 上一轮连 47.106.101.196、下一轮连 49.4.37.205——只按 DNS 解析出的 IP
+                # 劫持必然时不时整轮抓空。所以宿主端口确认通之后再加一条全量兜底：
+                # 代理是按 SNI 分流的，非登录服域名纯透传，不影响其它联网。
+                good, err = diag.add_all_rule(sh, HOST_PROXY)
+                if good:
+                    print('   已开启全量 443 兜底劫持（不依赖 IP 名单）')
+                else:
+                    print('   [!] 全量兜底劫持没加上：%s（仍按 IP 名单抓）' % err)
+            else:
                 print('   [!] 模拟器连不到宿主 8443，这一轮很可能抓不到任何数据。')
                 print('       放行方法：Windows 安全中心 -> 防火墙 -> 允许应用通过防火墙，')
                 print('       把 python.exe 的「专用」「公用」都勾上（首次弹窗点了取消会一直静默拦截）。')
@@ -314,151 +324,37 @@ def mitm_off(ips):
 
 
 # ---------------- 博物馆（账号真实点亮的藏品）----------------
-# 实测路径（旅行青蛙·中国之旅 1.0.20，基准 900x1600）：
-#   右上「菜单」(790,65) → 展开 工具栏/物品栏/小仓库/帮助 →「小仓库」(700,65)
-#   → 九宫格弹窗 → 第 2 行第 3 个「博物馆」(649,696)
-# 旧版写的是 (820,65)/(693,60)/(240,915)：前两下勉强擦到，第三下整个打偏，
-# 博物馆页从没打开过，所以 museum_load 一直没下发、藏品只能用底稿兜底。
-TAP_MENU = (790, 65)       # 右上「菜单」（三叶草条右侧）
-TAP_STORAGE = (700, 65)    # 展开后的「小仓库」
-TAP_MUSEUM = (649, 696)    # 小仓库九宫格里第 2 行第 3 个
-MUSEUM_HI = 0.45           # 博物馆页亮像素占比（实测 0.58；主界面 0.09、小仓库弹窗 0.27）
-
-
-def _screen_png():
-    """截屏 PNG 字节；失败返回空。"""
+# 导航逻辑全部在 scripts/museum.py：
+#   进「菜单(790,65) → 小仓库(700,65) → 博物馆(649,696)」触发 museum_load。
+# 这里只留薄代理 —— grab_official.py 被整文件覆盖过两次，逻辑放模块里才不会跟着丢，
+# _apply_hw_patch.py 也只需要把旧函数换成下面这几行。
+def visit_museum(pkg=None, retries=3):
+    """进博物馆页触发服务器下发 museum_load（实现见 scripts/museum.py）。"""
     try:
-        p = subprocess.run([ADB[0], '-s', SER[0], 'exec-out', 'screencap', '-p'],
-                           capture_output=True, timeout=40)
-        data = p.stdout or b''
-        return data if data[:8] == b'\x89PNG\r\n\x1a\n' else b''
-    except Exception:
-        return b''
-
-
-def screen_hi():
-    """整屏亮像素（亮度>200）占比。没有 PIL 或截屏失败时返回 None。"""
-    png = _screen_png()
-    if not png:
-        return None
-    try:
-        from PIL import Image
-        import io as _io
-        im = Image.open(_io.BytesIO(png)).convert('RGB')
-        im.thumbnail((60, 100))
-        px = im.load()
-        w, h = im.size
-        vals = []
-        for x in range(w):
-            for y in range(h):
-                r, g, b = px[x, y]
-                vals.append(0.299 * r + 0.587 * g + 0.114 * b)
-        return (sum(1 for v in vals if v > 200) / float(len(vals))) if vals else None
-    except Exception:
-        return None
-
-
-def on_museum_page():
-    """当前是否停在博物馆列表页。True/False，判断不了返回 None。"""
-    hi = screen_hi()
-    return None if hi is None else (hi >= MUSEUM_HI)
-
-
-def _tap(xy, wait=1.2):
-    """按 900x1600 基准坐标点按，自动按真实分辨率缩放。"""
-    w, h = 900, 1600
-    rc, out = adb('shell', 'wm size')
-    m = re.search(r'(\d+)x(\d+)', out)
-    if m:
-        w, h = int(m.group(1)), int(m.group(2))
-    x, y = int(xy[0] * w / 900), int(xy[1] * h / 1600)
-    sh('input tap %d %d' % (x, y))
-    time.sleep(wait)
-
-
-def _dismiss_popups():
-    """点空白处关掉遗留弹窗（回归奖励「收到物品」/分享求助力等）。
-    这些弹窗会吃掉后续点击，是博物馆路径失败的常见原因。"""
-    for _ in range(2):
-        _tap((450, 1450), 0.8)
-
-
-def visit_museum(retries=3):
-    """进「小仓库 → 博物馆」触发服务器下发 museum_load。返回是否打开成功。
-
-    模拟器是 ARM 转译跑的，动画比真机慢，菜单展开、九宫格弹窗都要等；
-    中途还可能被回归奖励/分享弹窗吃掉点击。所以每一步都截图核对，
-    不靠「点完就算」，失败整套重来。失败不影响主流程（藏品退回底稿兜底）。
-    """
-    if screen_hi() is None:
-        # 缺 PIL 或截不了图：退回盲点一遍，结果交给「有没有 museum_list」验证
-        _dismiss_popups()
-        _tap(TAP_MENU, 1.8)
-        _tap(TAP_STORAGE, 2.2)
-        _tap(TAP_MUSEUM, 3.0)
-        print('   [!] 截不了图，已盲点一遍（能否抓到看协议）')
-        return True
-
-    for i in range(1, retries + 1):
-        _dismiss_popups()
-        if on_museum_page():
-            print('   已在博物馆页')
-            return True
-
-        _tap(TAP_MENU, 1.8)          # 展开菜单：工具栏/物品栏/小仓库/帮助
-        _tap(TAP_STORAGE, 2.2)       # 小仓库：九宫格弹窗（亮像素约 0.22）
-
-        # 确认小仓库弹窗真的弹出来了，没弹就再点一次（最多两次）
-        for _ in range(2):
-            hi = screen_hi()
-            if hi is None or 0.14 <= hi <= 0.45:
-                break
-            _tap(TAP_STORAGE, 1.8)
-        if hi is not None and hi >= MUSEUM_HI:
-            print('   [%d/%d] 小仓库没打开（当前页亮度过高），重试' % (i, retries))
-            continue
-
-        _tap(TAP_MUSEUM, 3.0)        # 九宫格第 2 行第 3 个：博物馆
-        if on_museum_page():
-            print('   已打开博物馆页（第 %d 次尝试）' % i)
-            return True
-        print('   [%d/%d] 没进到博物馆页，重试...' % (i, retries))
-    return False
-
-
-def _sessions_since(since):
-    """抓包目录里 s2c.bin 在 since 之后还在写的会话（按文件 mtime，不按目录 mtime——
-    目录 mtime 只在增删文件时变，续写同一个 s2c.bin 不会更新它）。"""
-    out = []
-    for d in glob.glob(os.path.join(CAP, '*')):
-        if not os.path.isdir(d):
-            continue
-        p = os.path.join(d, 's2c.bin')
-        try:
-            if os.path.isfile(p) and os.path.getmtime(p) >= since:
-                out.append(d)
-        except Exception:
-            pass
-    return out
+        import museum
+        museum.setup(ADB[0], SER[0])
+        return museum.visit(pkg, retries)
+    except Exception as e:
+        print('   [!] 博物馆模块加载失败：%s' % e)
+        return False
 
 
 def museum_proto_seen(sessions):
-    """s2c.bin 里是否已出现博物馆列表（museum_list 是数组）。
+    """s2c 里是否已出现 museum_list 数组（实现见 scripts/museum.py）。"""
+    try:
+        import museum
+        return museum.proto_seen(sessions)
+    except Exception:
+        return False
 
-    注意 museumday.load 里也有 museum_list，但那是空对象 {}，不是藏品数组；
-    真回包才是 [{...},{...}]，所以必须匹配左方括号。
-    """
-    pat = re.compile(rb'"museum_list"\s*:\s*\[')
-    for d in sessions:
-        p = os.path.join(d, 's2c.bin')
-        if not os.path.isfile(p):
-            continue
-        try:
-            if pat.search(open(p, 'rb').read()):
-                return True
-        except Exception:
-            pass
-    return False
+
+def _sessions_since(since):
+    """抓包目录里 s2c.bin 在 since 之后仍在写的会话（实现见 scripts/museum.py）。"""
+    try:
+        import museum
+        return museum.sessions_since(CAP, since)
+    except Exception:
+        return []
 
 
 def restart_game(pkg, clear=False, tap=(450, 1170), timeout=150, stall=0):
@@ -875,13 +771,14 @@ def main():
 
         print('\n[3/5] 重启游戏触发登录（会自动点「进入游戏」）...')
         sessions = restart_game(pkg, clear=a.clear, tap=tuple(a.tap),
-                                timeout=a.timeout, stall=60)
+                                timeout=a.timeout, stall=40)
         print('   本次会话 %d 个' % len(sessions))
 
         # 一字节都没抓到 = 流量没进代理（不是解析问题）。自检整条链，能补的 IP 补上再试一轮。
         if diag and sum(size_of_s2c(d) for d in sessions) == 0:
+            _uid = diag.pkg_uid(sh, pkg)
             _ok, _real = diag.report(sh, ips, HOST_PROXY,
-                                     os.path.join(out_dir, '代理日志.txt'))
+                                     os.path.join(out_dir, '代理日志.txt'), _uid)
             _added = [ip for ip in _real if ip not in ips]
             for ip in _added:
                 _good, _err = diag.add_rule(sh, ip, HOST_PROXY)
@@ -908,7 +805,7 @@ def main():
             # 不在 restart_game 循环里做，避免被定时「进入游戏」点击打断。
             print('\n   [3.5/5] 进博物馆采真实藏品（触发 museum_load）...')
             t_mus = time.time()
-            opened = visit_museum()
+            opened = visit_museum(pkg)
             got = False
             if opened:
                 # 博物馆数据可能走新连接（新会话目录），也可能续在旧会话上，两边都看
