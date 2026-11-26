@@ -62,6 +62,11 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
 .prep ol{margin:0;padding-left:20px;color:var(--ink2)}
 .prep li{margin:5px 0}
 .prep b{color:var(--ink)}
+.prep-link{
+  margin-left:6px;font-size:12.5px;font-weight:500;color:var(--green);
+  cursor:pointer;white-space:nowrap;text-underline-offset:3px;
+}
+.prep-link:hover{text-decoration:underline;color:#2f6f4c}
 .prep .note{
   margin-top:10px;padding:9px 12px;border-radius:9px;background:var(--greenL);
   border:1px solid var(--greenB);font-size:12.5px;color:#2f6f4c;
@@ -216,7 +221,7 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
   </div>
 
   <section class="card prep">
-    <div class="card-h"><h2>使用前请准备</h2><span class="hint" id="prepHint"></span></div>
+    <div class="card-h"><h2>使用前请准备<span class="prep-link" id="prepTip" title="点这里联系作者">（联系作者可代抓）</span></h2><span class="hint" id="prepHint"></span></div>
     <ol>
       <li>打开 <b>模拟器</b>（MuMu / 雷电 等）并等待完全启动</li>
       <li>在模拟器里打开 <b>旅行青蛙</b> 并<b>登录到能正常游玩的界面</b></li>
@@ -564,6 +569,7 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
   function openTip(){ $('tipModal').hidden = false; }
   function closeTip(){ $('tipModal').hidden = true; }
   $('btnTip').addEventListener('click', openTip);
+  $('prepTip').addEventListener('click', openTip);
   $('btnTipClose').addEventListener('click', closeTip);
   $('tipMask').addEventListener('click', closeTip);
   document.addEventListener('keydown', function(e){
