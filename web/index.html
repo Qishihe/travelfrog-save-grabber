@@ -189,6 +189,25 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
 }
 .warnbox b{color:#7a4a10}
 
+/* ---------- 华为渠道服 ---------- */
+.hwgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px 12px;margin-bottom:6px}
+.hwitem{
+  display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink2);
+  background:#fafbf9;border:1px solid var(--line2);border-radius:9px;padding:8px 10px;min-width:0;
+}
+.hwitem .k{font-size:11.5px;color:var(--ink3);flex:none}
+.hwitem b{color:var(--ink);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hwitem b.bad{color:var(--red)}
+.hwitem b.ok{color:var(--green)}
+.hwconfirm{
+  background:#fdf7f5;border:1px solid #e3c4bc;border-radius:10px;padding:11px 13px;
+  font-size:12.5px;color:#7c4a3c;margin:8px 0 14px;line-height:1.65;
+}
+.hwconfirm ul{margin:6px 0 0;padding-left:18px}
+.hwconfirm li{margin:3px 0}
+.hwconfirm .sw{margin-top:9px;color:#7c4a3c}
+.hwconfirm .sw small{color:#a06f5f}
+
 /* ---------- toast ---------- */
 #toast{
   position:fixed;left:50%;bottom:26px;transform:translate(-50%,14px);opacity:0;
@@ -227,6 +246,7 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
       <li>在模拟器里打开 <b>旅行青蛙</b> 并<b>登录到能正常游玩的界面</b></li>
       <li>保持模拟器和游戏运行，回到这里点「开始抓取」</li>
       <li>抓取过程中游戏会被自动重启并点击「进入游戏」，<b>请不要手动操作模拟器</b></li>
+      <li><b>华为渠道服</b>额外需要 HMS Core 与华为账号登录，见下方「华为渠道服」卡片</li>
     </ol>
     <div class="note">抓取结束后，请<b>手动重开一次游戏</b>，让模拟器恢复正常联网。</div>
   </section>
@@ -240,8 +260,9 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
           <option value="">自动识别（推荐）</option>
           <option value="com.aligames.lxqw.hhb">官服 · 阿里</option>
           <option value="com.ali.croak.mi">米服</option>
+          <option value="com.Aligames.lxqw.huawei">华为渠道服 · 阿里</option>
         </select>
-        <span class="desc">两个都装了会自动依次抓取</span>
+        <span class="desc">装了多个会自动依次抓取</span>
       </div>
       <div class="field">
         <label>adb 端口</label>
@@ -273,6 +294,29 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
       <button class="btn danger" id="btnStop" hidden>停止</button>
       <span class="hint" id="actHint"></span>
     </div>
+  </section>
+
+  <section class="card" id="hwCard">
+    <div class="card-h">
+      <h2>华为渠道服</h2>
+      <span class="hint" id="hwHint">仅华为渠道服需要</span>
+    </div>
+    <div class="hwgrid">
+      <div class="hwitem"><span class="k">当前账号</span><b id="hwAccount">—</b></div>
+      <div class="hwitem"><span class="k">HMS Core</span><b id="hwHms">—</b></div>
+      <div class="hwitem"><span class="k">CPU ABI</span><b id="hwAbi">—</b></div>
+      <div class="hwitem"><span class="k">游戏包</span><b id="hwPkg">—</b></div>
+    </div>
+    <div class="actions">
+      <button class="btn sm" id="btnHwRefresh" type="button">刷新状态</button>
+      <button class="btn sm" id="btnHwPrepare" type="button">准备环境（装 HMS / 修 ABI）</button>
+      <button class="btn sm danger" id="btnHwLogout" type="button">一键退出华为账号</button>
+      <span class="hint" id="hwAct"></span>
+    </div>
+    <p class="unit" id="hwNote">
+      华为渠道服比官服多三道门：隐私协议 → 联运服务声明 → 启动页「我已阅读并同意」勾选，程序会自动处理。
+      但<b>华为账号登录页有防截屏保护</b>，账号密码只能你自己在模拟器里输入；本工具不会替你登录、也不会记录密码。
+    </p>
   </section>
 
   <section class="card" id="progressCard" hidden>
@@ -325,6 +369,32 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
     </div>
     <div class="warnbox">
       <b>⚠ 严禁用于高收费牟利。</b>本工具与存档数据仅供个人备份使用，禁止倒卖、批量代抓高价收费或任何商业用途；发现此类行为将停止提供帮助。
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="hwModal" hidden>
+  <div class="modal-mask" id="hwMask"></div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-label="退出华为账号确认">
+    <button class="modal-x" id="btnHwX" type="button" aria-label="关闭">×</button>
+    <h3>退出华为账号？</h3>
+    <p class="modal-sub">这会直接删除系统账号库里的华为账号，不是游戏内「退出登录」那种表面功夫</p>
+    <div class="hwconfirm">
+      <div>当前账号：<b id="hwConfirmName">—</b></div>
+      <ul>
+        <li>会<b>重启模拟器</b>（约 1–2 分钟），期间模拟器黑屏属于正常现象</li>
+        <li>游戏下次启动需要<b>重新输入华为账号密码</b></li>
+        <li><b>不影响</b>已下载的资源，也<b>不影响</b>服务器上的存档</li>
+        <li>正在抓取时不能执行，请先停止任务</li>
+      </ul>
+      <label class="sw">
+        <input type="checkbox" id="hwNoReboot">
+        <span>不重启模拟器<small>高级用法：账号可能因系统服务缓存未刷新而没真正退出，不推荐</small></span>
+      </label>
+    </div>
+    <div class="actions">
+      <button class="btn danger" id="btnHwConfirm" type="button">确认退出华为账号</button>
+      <button class="btn" id="btnHwCancel" type="button">取消</button>
     </div>
   </div>
 </div>
@@ -390,6 +460,7 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
         renderBadges(st, dev);
         if (showToast) toast(dev && dev.ok ? '已重新检测模拟器' : '检测失败，请确认模拟器已启动');
         $('prepHint').textContent = '程序版本 v' + (st.version || '1.0');
+        hwLoad(false);
       });
     }).catch(function(){
       $('badges').innerHTML = '<span class="badge bad"><i></i>无法连接本地服务</span>';
@@ -524,7 +595,10 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
     } else {
       card.classList.add('err');
       $('resTitle').textContent = '抓取失败';
-      var tip = '请查看上方日志中的 [X] / [!] 提示。常见原因：模拟器未启动、游戏未登录、端口不对、需要清登录态。';
+      var tip = '先看上方日志：若出现「解析出 0 个协议文件」，说明模拟器流量没进代理（不是解析问题）。'
+              + '打开该任务目录里的「代理日志.txt」：只有「代理已启动」= Windows 防火墙拦了 8443，'
+              + '或模拟器宿主地址不是 10.0.2.2；有「连接来自」但没有「TLS 建立」= 证书没生效。'
+              + '其他情况：模拟器未启动、游戏未登录、端口选错。';
       $('resSave').textContent = tip;
       $('resNote').textContent = '可调整设置后重试。' + (r.error ? '（' + r.error + '）' : '');
       toast('抓取失败，请看日志');
@@ -538,9 +612,102 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
     });
   }
 
+  /* ---------------- 华为渠道服 ---------------- */
+  function hwPort(){ return ($('fPort').value || '').trim(); }
+
+  function hwRender(st){
+    var acc = $('hwAccount'), hms = $('hwHms'), abi = $('hwAbi'), pkg = $('hwPkg');
+    if (!st || !st.ok) {
+      acc.textContent = '—'; acc.className = '';
+      hms.textContent = '—'; hms.className = '';
+      abi.textContent = '—'; abi.className = '';
+      pkg.textContent = '—'; pkg.className = '';
+      $('hwHint').textContent = (st && st.error) ? st.error : '仅华为渠道服需要';
+      return;
+    }
+    acc.textContent = st.account || '未登录';
+    acc.className = st.account ? 'ok' : 'bad';
+    hms.textContent = st.hms_installed ? '已安装' : '缺失';
+    hms.className = st.hms_installed ? 'ok' : 'bad';
+    abi.textContent = st.abi || '—';
+    abi.className = (st.abi && st.abi.toLowerCase().indexOf('arm') >= 0) ? 'ok' : 'bad';
+    pkg.textContent = st.pkg_installed ? '已安装' : '未安装';
+    pkg.className = st.pkg_installed ? 'ok' : 'bad';
+    $('hwHint').textContent = st.account ? '已登录 · ' + (st.screen || '') : '尚未登录华为账号';
+    if (st.account) $('hwConfirmName').textContent = st.account;
+  }
+
+  function hwLoad(showToast){
+    $('hwHint').textContent = '检测中…';
+    var q = hwPort() ? ('?port=' + encodeURIComponent(hwPort())) : '';
+    api('/api/huawei/status' + q).then(function(st){
+      hwRender(st);
+      if (showToast) toast(st && st.ok ? '华为渠道服状态已刷新' : '检测失败');
+    }).catch(function(){ hwRender({ok:false, error:'检测失败，模拟器可能没启动'}); });
+  }
+
+  function hwConfirmOpen(){
+    $('hwConfirmName').textContent = $('hwAccount').textContent || '—';
+    $('hwModal').hidden = false;
+  }
+  function hwConfirmClose(){ $('hwModal').hidden = true; }
+
+  function hwLogout(){
+    var btn = $('btnHwConfirm');
+    if (btn.disabled) return;
+    btn.disabled = true; btn.textContent = '正在退出…';
+    $('hwAct').textContent = '正在删除账号库并重启模拟器，别关程序';
+    post('/api/huawei/logout', {
+      confirm: true, port: hwPort(), noReboot: $('hwNoReboot').checked
+    }).then(function(r){
+      btn.disabled = false; btn.textContent = '确认退出华为账号';
+      if (!r.ok) {
+        toast(r.error || '退出失败');
+        $('hwAct').textContent = r.error || '';
+        return;
+      }
+      hwConfirmClose();
+      toast(r.changed ? '已退出华为账号' : (r.message || '当前没有登录账号'));
+      $('hwAct').textContent = r.message || '已处理';
+      hwLoad(false);
+    }).catch(function(e){
+      btn.disabled = false; btn.textContent = '确认退出华为账号';
+      toast('退出失败：' + e);
+    });
+  }
+
+  function hwPrepare(){
+    var btn = $('btnHwPrepare');
+    if (btn.disabled) return;
+    btn.disabled = true;
+    $('hwAct').textContent = '正在检查 HMS Core 与 ABI…';
+    post('/api/huawei/prepare', {port: hwPort()}).then(function(r){
+      btn.disabled = false;
+      var parts = [];
+      if (r.hms) parts.push('HMS：' + (r.hms.message || r.hms.error || '未知'));
+      if (r.abi) {
+        parts.push('ABI：' + (r.abi.ok ? (r.abi.changed ? '已改为 ' + r.abi.abi : r.abi.abi + '（无需改）')
+                                        : (r.abi.error || '未知')));
+      }
+      $('hwAct').textContent = parts.join('；') || (r.error || '');
+      toast(r.ok ? '环境已就绪' : '未完全就绪，见下方说明');
+      hwLoad(false);
+    }).catch(function(e){
+      btn.disabled = false;
+      toast('操作失败：' + e);
+    });
+  }
+
   /* ---------------- 事件绑定 ---------------- */
   $('btnStart').addEventListener('click', start);
   $('btnStop').addEventListener('click', stop);
+  $('btnHwRefresh').addEventListener('click', function(){ hwLoad(true); });
+  $('btnHwPrepare').addEventListener('click', hwPrepare);
+  $('btnHwLogout').addEventListener('click', hwConfirmOpen);
+  $('btnHwConfirm').addEventListener('click', hwLogout);
+  $('btnHwCancel').addEventListener('click', hwConfirmClose);
+  $('btnHwX').addEventListener('click', hwConfirmClose);
+  $('hwMask').addEventListener('click', hwConfirmClose);
   $('btnClearLog').addEventListener('click', function(){ $('log').innerHTML = ''; });
   $('btnAuto').addEventListener('click', function(){
     autoScroll = !autoScroll;
@@ -573,7 +740,7 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
   $('btnTipClose').addEventListener('click', closeTip);
   $('tipMask').addEventListener('click', closeTip);
   document.addEventListener('keydown', function(e){
-    if (e.key === 'Escape' || e.keyCode === 27) closeTip();
+    if (e.key === 'Escape' || e.keyCode === 27) { closeTip(); hwConfirmClose(); }
   });
   $('btnCopyQQ').addEventListener('click', function(){
     var qq = ($('qqText').textContent || '').trim();

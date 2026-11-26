@@ -25,6 +25,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(ROOT, 'web')
 SCRIPTS = os.path.join(ROOT, 'scripts')
 GRAB = os.path.join(SCRIPTS, 'grab_official.py')
+HW = os.path.join(SCRIPTS, 'huawei_channel.py')
 OUTPUT = os.path.join(ROOT, 'output')
 ADB = os.path.join(ROOT, 'tools', 'platform-tools', 'adb.exe')
 CA_PEM = os.path.join(ROOT, 'tools', 'mitm', 'ca.pem')
@@ -171,6 +172,7 @@ def status_info():
         'root': ROOT,
         'adb': os.path.isfile(ADB),
         'grab': os.path.isfile(GRAB),
+        'huawei': os.path.isfile(HW),
         'ca': os.path.isfile(CA_PEM),
         'output': OUTPUT,
         'runtime': sys.executable,
@@ -416,6 +418,65 @@ def job_view(jid, frm):
     }
 
 
+def _hw_call(cmd, port=None, extra=None, timeout=300):
+    """调用 scripts/huawei_channel.py 的子命令，把它的 JSON 输出原样返回。
+
+    拆成子进程而不是 import：华为换号要 adb root + reboot，adb 全局状态很脏，
+    隔离进程能让主界面服务保持可用（退出账号期间界面不卡死）。
+    """
+    if not os.path.isfile(HW):
+        return {'ok': False, 'error': 'scripts/huawei_channel.py 缺失，程序目录不完整。'}
+    cmdline = [sys.executable, '-u', HW, cmd]
+    if port:
+        cmdline += ['--port', str(port)]
+    if extra:
+        cmdline += [str(x) for x in extra]
+    env = dict(os.environ)
+    env['PYTHONIOENCODING'] = 'utf-8'
+    env['PYTHONUNBUFFERED'] = '1'
+    try:
+        p = subprocess.run(cmdline, capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=timeout, cwd=ROOT, env=env,
+                           creationflags=CREATE_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return {'ok': False, 'error': '操作超时（%ss），模拟器可能无响应' % timeout}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+    out = (p.stdout or '').strip()
+    i = out.find('{')
+    if i >= 0:
+        try:
+            return json.loads(out[i:])
+        except Exception:
+            pass
+    return {'ok': False, 'error': ((out + (p.stderr or '')) or '无输出')[-400:]}
+
+
+def huawei_status(port=None):
+    return _hw_call('status', port=port, timeout=90)
+
+
+def huawei_logout(b):
+    """一键退出华为账号。破坏性操作，必须显式 confirm 才动手。"""
+    if not b.get('confirm'):
+        return {'ok': False, 'needConfirm': True,
+                'error': '退出华为账号需要二次确认（会重启模拟器并要求重新登录）'}
+    if JOB['cur'] and JOB['cur'].state == 'running':
+        return {'ok': False, 'error': '正在抓取中，请先停止任务再退出账号。'}
+    extra = ['--no-reboot'] if b.get('noReboot') else []
+    return _hw_call('logout', port=b.get('port'), extra=extra, timeout=420)
+
+
+def huawei_prepare(b):
+    if JOB['cur'] and JOB['cur'].state == 'running':
+        return {'ok': False, 'error': '正在抓取中，请先停止任务再准备环境。'}
+    extra = []
+    apk = str(b.get('apk') or '').strip()
+    if apk:
+        extra += ['--apk', apk]
+    return _hw_call('prepare', port=b.get('port'), extra=extra, timeout=600)
+
+
 def open_path(p):
     """在资源管理器里打开一个目录。若传入的是文件，则打开它所在的文件夹。"""
     if not p:
@@ -498,6 +559,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(status_info())
         if p == '/api/devices':
             return self._json(devices_info())
+        if p == '/api/huawei/status':
+            qs = parse_qs(u.query)
+            port = (qs.get('port') or [''])[0].strip() or None
+            return self._json(huawei_status(port))
         if p == '/api/job':
             qs = parse_qs(u.query)
             jid = (qs.get('id') or [''])[0]
@@ -517,6 +582,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(stop_job())
         if p == '/api/open':
             return self._json(open_path(b.get('path') or ''))
+        if p == '/api/huawei/logout':
+            return self._json(huawei_logout(b))
+        if p == '/api/huawei/prepare':
+            return self._json(huawei_prepare(b))
         if p == '/api/quit':
             threading.Thread(target=lambda: (time.sleep(0.3), os._exit(0)),
                              daemon=True).start()

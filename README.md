@@ -8,8 +8,10 @@
 ## 功能
 
 - **一键抓取**：自动探测模拟器 adb 端口 → 装证书 → 起代理 → 重启游戏并点「进入游戏」→ 抓协议 → 生成存档
-- **双服支持**：阿里官服 `com.aligames.lxqw.hhb`、米服 `com.ali.croak.mi`，装了两个就依次各抓一遍，也可 `--pkg` 指定
+- **三服支持**：阿里官服 `com.aligames.lxqw.hhb`、米服 `com.ali.croak.mi`、华为渠道服 `com.Aligames.lxqw.huawei`，装了几个就依次各抓一遍，也可 `--pkg` 指定
+- **华为渠道服专项**：自动处理隐私协议 / 联运服务声明 / 启动页勾选；检测 HMS Core 与 CPU ABI；带「一键退出华为账号」按钮（删系统账号库 + 重启，需二次确认）
 - **收集项补全**：相册图层（含注入补抓）、博物馆真实藏品、省花图鉴、床边花瓶插花、庭院花盆与肥料格
+- **博物馆按账号真实点亮**：抓完自动进「小仓库 → 博物馆」触发 `museum_load`，藏品只补这个号真正点亮的（其余保留问号），不再一律填满 20 件；抓不到会明确标注「底稿兜底」
 - **结果直用**：输出 `<昵称>旅行青蛙存档_官服抓取_<时间>.json`，可直接导入单机版，或拖进存档编辑器查看修改
 - **本地网页界面**：环境自检（adb / 模拟器 / 文件完整性）、六步进度、实时日志、一键打开输出目录
 
@@ -54,6 +56,7 @@ app.py                  本地网页服务（标准库 http.server）+ 任务调
 web/index.html          单页界面（进度、日志、结果、打赏入口）
 web/assets/             界面图片
 scripts/grab_official.py   抓取主流程：adb、代理、证书、重启游戏、落盘
+scripts/huawei_channel.py  华为渠道服：状态查询 / 一键退号 / 装 HMS / 修 ABI / 自动过协议页
 scripts/生成实号存档.py     协议 → 存档 json（加密封装）
 scripts/转换_官服家具.py    家具/博物馆配置转换
 scripts/补救_从抓包提取相册图层.py  已抓完但照片空白时的离线补救
@@ -62,6 +65,36 @@ tools/mitm/parse_ws.py  协议解析
 lib/tf.py               存档加解密（信封 format/version/salt/data/checksum）
 data/config_json/       家具、博物馆等配置（转换用）
 ```
+
+## 华为渠道服（比官服多三道门）
+
+华为渠道服包名 `com.Aligames.lxqw.huawei`（注意大写 `A`），启动链路上有三个官服没有的坑，工具已经都接进来了：
+
+| 坑 | 现象 | 工具怎么处理 |
+| --- | --- | --- |
+| 阿里聚安全加固的 x86 库 | 启动 6 秒 `SIGSEGV`，崩溃栈全是 `libsgmainso` | 检测 `primaryCpuAbi`，非 ARM 时提示以 `armeabi-v7a` 重装（走 houdini 转译） |
+| 强依赖 HMS Core | 卡在「安装 HMS Core」提示，取消→二次确认→再弹出，死循环 | 自动检测并安装 `tools/apk/hmscore.apk` |
+| 多道协议页 | 隐私协议 → 联运声明 → 启动页「我已阅读并同意」勾选 | 按界面类型自动点击；启动页复选框按 900x1600 基准坐标等比换算 |
+
+**准备工作**
+
+1. 把 `hmscore.apk` 放到 `tools/apk/`（仓库不收录该文件，见 `.gitignore`）
+2. 首次安装游戏时用 `adb install -r -t --abi armeabi-v7a <游戏.apk>`，否则 x86 加固库必崩
+3. 进界面「华为渠道服」卡片点「准备环境」，确认 HMS Core 已装、ABI 是 `armeabi-v7a`
+
+**登录与换号**
+
+- 华为账号登录页设了 `FLAG_SECURE`，**截屏返回 0 字节**，因此账号密码只能自己在模拟器窗口里输入，工具不会代填、也不记录
+- 换号点「一键退出华为账号」：删除系统 `AccountManager` 里的华为账号（`/data/system_de` 与 `/data/system_ce` 的 `accounts*.db`），然后重启模拟器
+  - `pm clear com.huawei.hwid` **没用**，账号不在应用数据里
+  - 删除后必须 `reboot`，否则系统服务内存里还揣着 token，游戏照样免登录
+  - 不影响已下载资源和服务器存档，但游戏下次启动要重新输密码
+- 验证是否退干净：`adb shell dumpsys account | grep "Accounts:"`，`Accounts: 0` 才算干净
+
+**为什么新账号进不去**
+
+服务器自 2026-09-08 起停止新用户注册，登录时报 `P_-10112`（subCode `5002007`）就是「这个账号在本渠道没有历史角色，且不允许注册」。
+只有 **2026-09-08 之前在该渠道玩过**的账号能进——那走的是老玩家登录，不是注册。
 
 ## 换一台电脑能用吗？
 

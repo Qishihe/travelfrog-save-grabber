@@ -19,6 +19,9 @@ tools/mitm/ca.pem
 tools/mitm/srv.pem
 tools/mitm/srv.key
 
+# 第三方安装包（体积大，按需自行放置：HMS Core / 游戏 APK）
+tools/apk/
+
 # 系统垃圾
 Thumbs.db
 desktop.ini

@@ -327,13 +327,23 @@ def _screen_png():
 def on_splash():
     """当前是否停在「启动页」。
 
-    启动页整屏米白（亮度 >200 的像素占九成），游戏主界面是深色草地/池塘（不到一成）。
+    启动页整屏米白（亮像素占九成），游戏主界面是深色草地/池塘（不到一成）。
     用亮度占比判断，比读控件树可靠——启动页是自绘 UI，uiautomator 读不到任何文字。
-    返回 True=启动页 / False=已在游戏 / None=判断不了（没有 PIL 或截屏失败）。
+    解码走 pnglite（纯标准库），绿色包的内嵌 Python 没 PIL 也能判断。
+    返回 True=启动页 / False=已在游戏 / None=判断不了（截屏失败）。
     """
     png = _screen_png()
     if not png:
         return None
+    try:
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import pnglite
+        hi = pnglite.hi_ratio(png)
+        if hi is not None:
+            return hi > 0.5
+    except Exception:
+        pass
     try:
         from PIL import Image
         import io as _io

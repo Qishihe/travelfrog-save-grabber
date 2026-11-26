@@ -29,7 +29,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Pr
 
 echo [2/4] 复制程序文件（首次安装约需十几秒）...
 if not exist "%DEST%" mkdir "%DEST%"
-robocopy "%SRC%" "%DEST%" /E /XD output logs __pycache__ .git /XF *.pyc /NFL /NDL /NJH /NJS /NP >nul
+robocopy "%SRC%" "%DEST%" /E /XD output logs __pycache__ .git /XF *.pyc /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >nul
 if errorlevel 8 (
   echo.
   echo [X] 复制文件失败。请确认抓取器已关闭，或手动删除 %DEST% 后重试。
@@ -65,9 +65,7 @@ echo   双击即可打开界面（会自动打开浏览器）。
 echo ============================================================
 echo.
 if defined SILENT goto :end
-choice /c YN /n /m "现在打开抓取器吗？(Y/N) "
-if errorlevel 2 goto :end
-start "" "%DEST%\launch.vbs"
+echo   双击桌面「旅行青蛙抓取器」快捷方式即可打开界面。（本窗口可以直接关闭）
 
 :end
 echo.
