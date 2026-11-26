@@ -143,7 +143,7 @@ def report(sh, ips, host_port, proxy_log):
     """把整条链的三环都探一遍，打印人话结论。返回 (可达, 真实IP列表)。"""
     ok, detail = probe(sh, host_port)
     print('   [诊断] 模拟器 -> 宿主 %s：%s'
-          % (host_port, '通' if ok else '不通（%s）' % detail))
+          % (host_port, '通' if ok else '不通（%s）' % (detail or '无响应')))
 
     real = real_web_ips(sh)
     if real:
