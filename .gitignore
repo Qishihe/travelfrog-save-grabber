@@ -1,0 +1,25 @@
+# 运行时生成（含真实存档数据，不要提交）
+output/
+logs/
+tools/mitm/capture/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 依赖与二进制：不随源码分发，见 Release 安装包
+runtime/
+tools/platform-tools/
+
+# 专用自签 CA 与私钥：含私钥，不公开
+tools/mitm/ca.pem
+tools/mitm/srv.pem
+tools/mitm/srv.key
+
+# 系统垃圾
+Thumbs.db
+desktop.ini
+.DS_Store

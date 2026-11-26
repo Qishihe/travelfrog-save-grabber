@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>旅行青蛙 · 存档抓取器</title>
+<style>
+:root{
+  --bg:#f4f6f2; --panel:#fff; --line:#e3e8e1; --line2:#eff2ed;
+  --ink:#26332c; --ink2:#5c6b62; --ink3:#8c9a91;
+  --green:#3f8f63; --green2:#4fa676; --greenL:#e8f4ec; --greenB:#a9d6ba;
+  --amber:#b9832a; --red:#c0563f; --blue:#3f6f8f;
+  --shadow:0 1px 2px rgba(38,51,44,.06),0 6px 18px rgba(38,51,44,.05);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg);color:var(--ink);font-size:14px;line-height:1.6;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  padding:22px 18px 60px;
+}
+h1,h2,h3{margin:0;font-weight:700}
+code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-family:ui-monospace,Consolas,monospace}
+.wrap{max-width:940px;margin:0 auto}
+
+/* ---------- 顶栏 ---------- */
+.top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.logo{
+  width:46px;height:46px;border-radius:14px;flex:none;display:grid;place-items:center;
+  background:linear-gradient(145deg,#e9f6ee,#d3ebdd);font-size:24px;
+  box-shadow:inset 0 0 0 1px var(--greenB);
+}
+.brand h1{font-size:19px;letter-spacing:.3px}
+.brand p{margin:1px 0 0;font-size:12px;color:var(--ink3)}
+.badges{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
+.badge{
+  display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;
+  background:#fff;border:1px solid var(--line);font-size:12px;color:var(--ink2);white-space:nowrap;
+}
+.badge i{width:7px;height:7px;border-radius:50%;background:var(--ink3);flex:none}
+.badge.ok i{background:var(--green2);box-shadow:0 0 0 3px #e3f3e9}
+.badge.warn i{background:var(--amber);box-shadow:0 0 0 3px #fbf0dd}
+.badge.bad i{background:var(--red);box-shadow:0 0 0 3px #f7e5e0}
+.badge button{
+  border:0;background:none;color:var(--green);cursor:pointer;font-size:12px;padding:0;
+  text-decoration:underline;text-underline-offset:2px;
+}
+
+/* ---------- 卡片 ---------- */
+.card{
+  background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:16px 18px;margin-bottom:14px;box-shadow:var(--shadow);
+}
+.card-h{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.card-h h2{font-size:15px}
+.card-h .hint{font-size:12px;color:var(--ink3);margin-left:auto;font-variant-numeric:tabular-nums}
+.unit{font-size:12px;color:var(--ink3);margin:8px 0 0}
+
+/* ---------- 准备提示 ---------- */
+.prep{background:linear-gradient(180deg,#fbfdfb,#fff)}
+.prep ol{margin:0;padding-left:20px;color:var(--ink2)}
+.prep li{margin:5px 0}
+.prep b{color:var(--ink)}
+.prep .note{
+  margin-top:10px;padding:9px 12px;border-radius:9px;background:var(--greenL);
+  border:1px solid var(--greenB);font-size:12.5px;color:#2f6f4c;
+}
+
+/* ---------- 表单 ---------- */
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px 16px}
+.field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.field label{font-size:12px;color:var(--ink2);font-weight:600}
+.field input,.field select{
+  height:36px;padding:0 10px;border:1px solid var(--line);border-radius:9px;
+  background:#fafbf9;color:var(--ink);font-size:13.5px;outline:none;
+  font-family:inherit;transition:border-color .12s,background .12s;
+}
+.field input:focus,.field select:focus{border-color:var(--greenB);background:#fff}
+.field .desc{font-size:11.5px;color:var(--ink3)}
+.switches{display:flex;flex-direction:column;gap:8px;grid-column:1/-1;margin-top:2px}
+.sw{display:flex;align-items:flex-start;gap:9px;font-size:13px;color:var(--ink2);cursor:pointer}
+.sw input{margin:3px 0 0;width:15px;height:15px;accent-color:var(--green);flex:none}
+.sw span b{color:var(--ink)}
+.sw small{display:block;font-size:11.5px;color:var(--ink3);font-weight:400}
+
+/* ---------- 按钮 ---------- */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  height:38px;padding:0 18px;border-radius:10px;border:1px solid var(--line);
+  background:#fff;color:var(--ink2);font-size:13.5px;font-weight:600;cursor:pointer;
+  font-family:inherit;transition:all .12s;white-space:nowrap;
+}
+.btn:hover{border-color:var(--greenB);background:var(--greenL);color:#2f6f4c}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.primary{background:var(--green);border-color:var(--green);color:#fff}
+.btn.primary:hover:not(:disabled){background:#37805a;border-color:#37805a;color:#fff}
+.btn.danger{background:#fff;border-color:#e3c4bc;color:var(--red)}
+.btn.danger:hover{background:#faf0ee;border-color:var(--red)}
+.btn.sm{height:29px;padding:0 11px;font-size:12px;border-radius:8px}
+.btn.big{height:44px;padding:0 30px;font-size:15px}
+.actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:16px}
+.actions .hint{font-size:12px;color:var(--ink3)}
+
+/* ---------- 步骤条 ---------- */
+.steps{display:flex;gap:6px;flex-wrap:wrap}
+.step{
+  flex:1;min-width:112px;padding:9px 10px;border-radius:10px;border:1px solid var(--line2);
+  background:#fafbf9;color:var(--ink3);font-size:12.5px;display:flex;align-items:center;gap:8px;
+  transition:all .18s;
+}
+.step .dot{
+  width:20px;height:20px;border-radius:50%;border:2px solid var(--line);
+  display:grid;place-items:center;font-size:11px;flex:none;background:#fff;color:var(--ink3);
+}
+.step.now{border-color:var(--greenB);background:var(--greenL);color:#2f6f4c;font-weight:600}
+.step.now .dot{border-color:var(--green);color:var(--green);animation:pulse 1.15s infinite}
+.step.done{color:#2f6f4c;border-color:var(--greenB);background:#f2faf5}
+.step.done .dot{border-color:var(--green);background:var(--green);color:#fff}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(79,166,118,.42)}70%{box-shadow:0 0 0 6px rgba(79,166,118,0)}100%{box-shadow:0 0 0 0 rgba(79,166,118,0)}}
+
+/* ---------- 日志 ---------- */
+.log{
+  height:340px;overflow:auto;background:#1f2a24;border-radius:11px;padding:12px 14px;
+  font-family:ui-monospace,Consolas,"Cascadia Mono",monospace;font-size:12.5px;line-height:1.65;
+  color:#c8d6cd;white-space:pre-wrap;word-break:break-all;
+}
+.log .ln{display:block}
+.log .ln .t{color:#6c8578;margin-right:9px;user-select:none}
+.log .ln.err{color:#f19a86}
+.log .ln.warn{color:#e8c47e}
+.log .ln.info{color:#8fb9d4}
+.log .ln.step{color:#7fd8a3;font-weight:700}
+.log .ln.ok{color:#7fd8a3}
+.log:empty::before{content:"等待开始…";color:#5d7268}
+
+/* ---------- 结果 ---------- */
+.result{border-color:var(--greenB);background:linear-gradient(180deg,#f6fcf8,#fff)}
+.result.err{border-color:#e3c4bc;background:linear-gradient(180deg,#fdf7f5,#fff)}
+.path{
+  margin:0;padding:11px 13px;border-radius:10px;background:#11201a;color:#8ee0ac;
+  font-family:ui-monospace,Consolas,monospace;font-size:12.5px;word-break:break-all;
+}
+.result.err .path{background:#2a1713;color:#f0a48f}
+
+/* ---------- 打赏 ---------- */
+.tipbtn{
+  border-color:var(--greenB);background:linear-gradient(180deg,#fff,#f3fbf6);
+  color:#2f6f4c;
+}
+.tipbtn:hover{background:var(--greenL)}
+.modal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:18px}
+.modal[hidden]{display:none}
+.modal-mask{position:absolute;inset:0;background:rgba(24,36,29,.45);backdrop-filter:blur(2px)}
+.modal-card{
+  position:relative;width:100%;max-width:400px;max-height:calc(100vh - 36px);overflow:auto;
+  background:#fff;border-radius:16px;padding:18px 20px 20px;
+  box-shadow:0 24px 60px rgba(15,30,22,.28);animation:pop .18s ease-out;
+}
+@keyframes pop{from{transform:translateY(8px) scale(.98);opacity:.6}to{transform:none;opacity:1}}
+.modal-x{
+  position:absolute;top:8px;right:10px;width:30px;height:30px;border:0;border-radius:9px;
+  background:transparent;color:var(--ink3);font-size:20px;line-height:1;cursor:pointer;
+}
+.modal-x:hover{background:var(--line2);color:var(--ink)}
+.modal-card h3{font-size:16px;margin-bottom:2px;padding-right:30px}
+.modal-sub{margin:0 0 12px;font-size:12px;color:var(--ink3)}
+.qr{
+  display:block;width:100%;max-width:260px;margin:0 auto;border-radius:12px;
+  border:1px solid var(--line);background:#fff;
+}
+.qr-tip{margin:9px 0 0;text-align:center;font-size:12px;color:var(--ink2)}
+.contact{margin-top:14px;border-top:1px dashed var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px}
+.contact-row{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink2);flex-wrap:wrap}
+.contact-row .k{color:var(--ink3);font-size:12px;min-width:34px}
+.contact-row b{color:var(--ink);font-variant-numeric:tabular-nums;letter-spacing:.4px}
+.pricetag{
+  margin-left:auto;font-size:12px;color:#2f6f4c;background:var(--greenL);
+  border:1px solid var(--greenB);border-radius:999px;padding:2px 9px;font-weight:600;
+}
+.warnbox{
+  margin-top:12px;padding:10px 12px;border-radius:10px;background:#fdf6ee;border:1px solid #ecd7b6;
+  color:#8a5a1d;font-size:12.5px;line-height:1.55;
+}
+.warnbox b{color:#7a4a10}
+
+/* ---------- toast ---------- */
+#toast{
+  position:fixed;left:50%;bottom:26px;transform:translate(-50%,14px);opacity:0;
+  background:#26332c;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;
+  pointer-events:none;transition:all .22s;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,.2);
+}
+#toast.on{opacity:1;transform:translate(-50%,0)}
+
+@media (max-width:620px){
+  body{padding:16px 12px 50px}
+  .badges{margin-left:0;width:100%}
+  .step{min-width:calc(50% - 6px)}
+  .log{height:280px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div class="brand">
+      <div class="logo">🐸</div>
+      <div>
+        <h1>旅行青蛙 · 存档抓取器</h1>
+        <p>一键抓取官服 / 米服存档 · 本地运行，数据不出电脑</p>
+      </div>
+    </div>
+    <div class="badges" id="badges"></div>
+    <button class="btn sm tipbtn" id="btnTip" type="button">☕ 打赏 / 联系作者</button>
+  </div>
+
+  <section class="card prep">
+    <div class="card-h"><h2>使用前请准备</h2><span class="hint" id="prepHint"></span></div>
+    <ol>
+      <li>打开 <b>模拟器</b>（MuMu / 雷电 等）并等待完全启动</li>
+      <li>在模拟器里打开 <b>旅行青蛙</b> 并<b>登录到能正常游玩的界面</b></li>
+      <li>保持模拟器和游戏运行，回到这里点「开始抓取」</li>
+      <li>抓取过程中游戏会被自动重启并点击「进入游戏」，<b>请不要手动操作模拟器</b></li>
+    </ol>
+    <div class="note">抓取结束后，请<b>手动重开一次游戏</b>，让模拟器恢复正常联网。</div>
+  </section>
+
+  <section class="card">
+    <div class="card-h"><h2>抓取设置</h2><span class="hint">一般保持默认即可</span></div>
+    <div class="form">
+      <div class="field">
+        <label>服务器</label>
+        <select id="fPkg">
+          <option value="">自动识别（推荐）</option>
+          <option value="com.aligames.lxqw.hhb">官服 · 阿里</option>
+          <option value="com.ali.croak.mi">米服</option>
+        </select>
+        <span class="desc">两个都装了会自动依次抓取</span>
+      </div>
+      <div class="field">
+        <label>adb 端口</label>
+        <input id="fPort" type="text" inputmode="numeric" placeholder="留空自动探测">
+        <span class="desc">连不上模拟器时才需要填，常见 16384</span>
+      </div>
+      <div class="field">
+        <label>抓取总超时（秒）</label>
+        <input id="fTimeout" type="number" min="30" max="900" step="10" value="150">
+        <span class="desc">游戏启动慢可调大，30–900</span>
+      </div>
+      <div class="switches">
+        <label class="sw">
+          <input type="checkbox" id="fClear">
+          <span><b>清登录态强制全量</b><small>缓存登录态抓不全时用；会触发重新登录</small></span>
+        </label>
+        <label class="sw">
+          <input type="checkbox" id="fNoAlbum">
+          <span><b>跳过相册图层补抓</b><small>相册照片少抓一点，速度更快</small></span>
+        </label>
+        <label class="sw">
+          <input type="checkbox" id="fNoMuseum">
+          <span><b>跳过博物馆真实藏品</b><small>不自动进博物馆，藏品用兜底数据</small></span>
+        </label>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn primary big" id="btnStart">开始抓取</button>
+      <button class="btn danger" id="btnStop" hidden>停止</button>
+      <span class="hint" id="actHint"></span>
+    </div>
+  </section>
+
+  <section class="card" id="progressCard" hidden>
+    <div class="card-h"><h2>抓取进度</h2><span class="hint" id="elapsed"></span></div>
+    <div class="steps" id="steps"></div>
+  </section>
+
+  <section class="card" id="logCard" hidden>
+    <div class="card-h">
+      <h2>运行日志</h2>
+      <button class="btn sm" id="btnAuto" style="margin-left:auto">自动滚动：开</button>
+      <button class="btn sm" id="btnClearLog">清空显示</button>
+    </div>
+    <div class="log" id="log"></div>
+  </section>
+
+  <section class="card result" id="resultCard" hidden>
+    <div class="card-h"><h2 id="resTitle">抓取完成</h2></div>
+    <p class="path" id="resSave">—</p>
+    <div class="actions">
+      <button class="btn primary" id="btnOpenDir">打开输出文件夹</button>
+      <button class="btn" id="btnCopyPath">复制存档路径</button>
+    </div>
+    <p class="unit" id="resNote">提示：抓完请手动重开一次游戏，恢复模拟器联网。</p>
+  </section>
+
+</div>
+<div id="toast"></div>
+
+<div class="modal" id="tipModal" hidden>
+  <div class="modal-mask" id="tipMask"></div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-label="打赏与联系作者">
+    <button class="modal-x" id="btnTipClose" type="button" aria-label="关闭">×</button>
+    <h3>打赏 / 联系作者</h3>
+    <p class="modal-sub">本工具永久免费，只用于备份你自己的存档</p>
+    <img class="qr" src="assets/alipay.jpg" alt="支付宝收款二维码">
+    <p class="qr-tip">打开支付宝「扫一扫」即可打赏，金额随意，感谢支持</p>
+    <div class="contact">
+      <div class="contact-row">
+        <span class="k">QQ</span><b id="qqText">2742973313</b>
+        <button class="btn sm" id="btnCopyQQ" type="button">复制</button>
+        <span class="pricetag">代抓存档 5 元/次</span>
+      </div>
+      <div class="contact-row" style="font-size:12.5px;color:var(--ink2)">
+        <span>不会操作、模拟器连不上、抓取失败，都可以加 QQ 问我。</span>
+      </div>
+      <div class="contact-row" style="font-size:12.5px;color:var(--ink2)">
+        <span>有偿代抓取存档：<b style="color:var(--ink)">5 元/次</b>，加好友备注「抓存档」。</span>
+      </div>
+    </div>
+    <div class="warnbox">
+      <b>⚠ 严禁用于高收费牟利。</b>本工具与存档数据仅供个人备份使用，禁止倒卖、批量代抓高价收费或任何商业用途；发现此类行为将停止提供帮助。
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  var STEP_NAMES = ['准备环境', '启动代理', '装证书', '重启游戏抓取', '解析协议', '生成存档'];
+  var $ = function(id){ return document.getElementById(id); };
+  var jobId = null, cursor = 0, timer = null, autoScroll = true, maxLines = 3000;
+  var lastOutDir = '', lastSave = '', outRoot = '';
+
+  /* ---------------- 工具 ---------------- */
+  function toast(msg){
+    var el = $('toast');
+    el.textContent = msg;
+    el.classList.add('on');
+    clearTimeout(el._t);
+    el._t = setTimeout(function(){ el.classList.remove('on'); }, 2600);
+  }
+  function api(path, opt){
+    return fetch(path, opt).then(function(r){ return r.json(); });
+  }
+  function post(path, body){
+    return api(path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body || {})
+    });
+  }
+  function esc(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  /* ---------------- 环境状态 ---------------- */
+  function renderBadges(st, dev){
+    var html = '';
+    html += '<span class="badge ' + (st.adb ? 'ok' : 'bad') + '"><i></i>adb ' +
+            (st.adb ? '就绪' : '缺失') + '</span>';
+    var devTxt = '未检测到模拟器', devCls = 'warn';
+    if (dev && dev.ok) {
+      var on = (dev.devices || []).filter(function(d){ return d.state === 'device'; });
+      if (on.length) { devTxt = '模拟器已连接' + (on.length > 1 ? '（' + on.length + ' 台）' : ''); devCls = 'ok'; }
+      else if ((dev.devices || []).length) { devTxt = '模拟器未授权'; devCls = 'warn'; }
+    } else if (dev && !dev.ok) {
+      devTxt = '模拟器检测失败'; devCls = 'bad';
+    }
+    html += '<span class="badge ' + devCls + '"><i></i>' + devTxt +
+            ' <button id="btnRecheck">重新检测</button></span>';
+    html += '<span class="badge ' + (st.grab && st.ca ? 'ok' : 'bad') + '"><i></i>程序文件' +
+            (st.grab && st.ca ? '完整' : '缺失') + '</span>';
+    $('badges').innerHTML = html;
+    var rc = $('btnRecheck');
+    if (rc) rc.addEventListener('click', function(){ loadEnv(true); });
+  }
+
+  function loadEnv(showToast){
+    return api('/api/status').then(function(st){
+      outRoot = st.output || '';
+      return api('/api/devices').then(function(dev){
+        renderBadges(st, dev);
+        if (showToast) toast(dev && dev.ok ? '已重新检测模拟器' : '检测失败，请确认模拟器已启动');
+        $('prepHint').textContent = '程序版本 v' + (st.version || '1.0');
+      });
+    }).catch(function(){
+      $('badges').innerHTML = '<span class="badge bad"><i></i>无法连接本地服务</span>';
+    });
+  }
+
+  /* ---------------- 步骤 ---------------- */
+  function renderSteps(){
+    var html = '';
+    for (var i = 0; i < STEP_NAMES.length; i++) {
+      html += '<div class="step" data-s="' + i + '">' +
+                '<span class="dot">' + (i + 1) + '</span>' +
+                '<span>' + STEP_NAMES[i] + '</span>' +
+              '</div>';
+    }
+    $('steps').innerHTML = html;
+  }
+  function setStep(step, state){
+    var nodes = $('steps').children;
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i], s = +n.dataset.s;
+      n.classList.remove('now', 'done');
+      if (s < step) n.classList.add('done');
+      else if (s === step && state === 'running') n.classList.add('now');
+      else if (s === step && state === 'done') n.classList.add('done');
+      var dot = n.querySelector('.dot');
+      dot.textContent = (s < step || (s === step && state === 'done')) ? '✓' : (s + 1);
+    }
+  }
+
+  /* ---------------- 日志 ---------------- */
+  function lineClass(x){
+    if (/\[X\]|Traceback|Error:|失败/.test(x)) return 'err';
+    if (/^\s*\[!\]/.test(x) || /\[!\]/.test(x)) return 'warn';
+    if (/^\s*\[i\]/.test(x) || /\[i\]/.test(x)) return 'info';
+    if (/\[\d(\.5)?\/5\]/.test(x)) return 'step';
+    if (/存档命名|抓取完成|Done|已生成/.test(x)) return 'ok';
+    return '';
+  }
+  function appendLines(lines){
+    var box = $('log');
+    var nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i], d = document.createElement('span');
+      d.className = 'ln ' + lineClass(L.x);
+      d.innerHTML = '<span class="t">' + esc(L.t) + '</span>' + esc(L.x);
+      frag.appendChild(d);
+    }
+    box.appendChild(frag);
+    while (box.children.length > maxLines) box.removeChild(box.firstChild);
+    if (autoScroll && nearBottom) box.scrollTop = box.scrollHeight;
+  }
+
+  /* ---------------- 主流程 ---------------- */
+  function resetPanels(){
+    $('log').innerHTML = '';
+    $('resultCard').hidden = true;
+    $('resultCard').classList.remove('err');
+    $('progressCard').hidden = false;
+    $('logCard').hidden = false;
+    renderSteps();
+    setStep(0, 'running');
+    lastOutDir = ''; lastSave = '';
+  }
+
+  function setRunning(on){
+    $('btnStart').disabled = on;
+    $('btnStart').textContent = on ? '抓取中…' : '开始抓取';
+    $('btnStop').hidden = !on;
+    $('actHint').textContent = on ? '任务进行中，请勿操作模拟器' : '';
+  }
+
+  function start(){
+    var body = {
+      pkg: $('fPkg').value,
+      port: $('fPort').value.trim(),
+      timeout: $('fTimeout').value.trim(),
+      clear: $('fClear').checked,
+      noAlbum: $('fNoAlbum').checked,
+      noMuseum: $('fNoMuseum').checked
+    };
+    $('btnStart').disabled = true;
+    post('/api/start', body).then(function(r){
+      if (!r.ok) { $('btnStart').disabled = false; toast(r.error || '启动失败'); return; }
+      jobId = r.id; cursor = 0;
+      resetPanels();
+      setRunning(true);
+      if (timer) clearInterval(timer);
+      timer = setInterval(poll, 450);
+      poll();
+    }).catch(function(e){
+      $('btnStart').disabled = false;
+      toast('启动失败：' + e);
+    });
+  }
+
+  function poll(){
+    if (!jobId) return;
+    api('/api/job?id=' + encodeURIComponent(jobId) + '&from=' + cursor).then(function(r){
+      if (!r.ok) { stopPolling(); return; }
+      if (r.lines && r.lines.length) { appendLines(r.lines); cursor = r.next; }
+      setStep(r.step, r.state);
+      $('elapsed').textContent = '已用时 ' + r.elapsed + ' 秒';
+      if (r.outDir) lastOutDir = r.outDir;
+      if (r.saveFile) lastSave = r.saveFile;
+      if (r.state !== 'running') { stopPolling(); finish(r); }
+    }).catch(function(){ /* 网络抖动忽略，下次重试 */ });
+  }
+
+  function stopPolling(){
+    if (timer) { clearInterval(timer); timer = null; }
+    setRunning(false);
+  }
+
+  function finish(r){
+    var card = $('resultCard');
+    card.hidden = false;
+    card.classList.remove('err');
+    if (r.state === 'done') {
+      $('resTitle').textContent = '抓取完成 ✓';
+      $('resSave').textContent = lastSave || (lastOutDir ? lastOutDir : '（未找到存档文件，请查看日志）');
+      $('resNote').textContent = '提示：抓完请手动重开一次游戏，恢复模拟器联网。';
+      setStep(5, 'done');
+      toast('抓取完成');
+    } else if (r.state === 'stopped') {
+      card.classList.add('err');
+      $('resTitle').textContent = '已停止';
+      $('resSave').textContent = '任务被手动停止，未生成存档。请手动重开一次游戏恢复联网。';
+      $('resNote').textContent = '';
+      toast('已停止');
+    } else {
+      card.classList.add('err');
+      $('resTitle').textContent = '抓取失败';
+      var tip = '请查看上方日志中的 [X] / [!] 提示。常见原因：模拟器未启动、游戏未登录、端口不对、需要清登录态。';
+      $('resSave').textContent = tip;
+      $('resNote').textContent = '可调整设置后重试。' + (r.error ? '（' + r.error + '）' : '');
+      toast('抓取失败，请看日志');
+    }
+  }
+
+  function stop(){
+    post('/api/stop', {}).then(function(r){
+      if (!r.ok) toast(r.error || '停止失败');
+      else toast('正在停止…');
+    });
+  }
+
+  /* ---------------- 事件绑定 ---------------- */
+  $('btnStart').addEventListener('click', start);
+  $('btnStop').addEventListener('click', stop);
+  $('btnClearLog').addEventListener('click', function(){ $('log').innerHTML = ''; });
+  $('btnAuto').addEventListener('click', function(){
+    autoScroll = !autoScroll;
+    this.textContent = '自动滚动：' + (autoScroll ? '开' : '关');
+  });
+  $('btnOpenDir').addEventListener('click', function(){
+    // 统一打开「本次输出目录」；目录未知时退回输出总目录
+    var p = lastOutDir || outRoot;
+    if (!p) { toast('还没有可打开的目录'); return; }
+    post('/api/open', {path: p}).then(function(r){ if (!r.ok) toast(r.error); });
+  });
+  $('btnCopyPath').addEventListener('click', function(){
+    var p = lastSave || lastOutDir;
+    if (!p) { toast('还没有存档路径'); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(p).then(function(){ toast('已复制路径'); });
+    } else {
+      var t = document.createElement('textarea');
+      t.value = p; document.body.appendChild(t); t.select();
+      try { document.execCommand('copy'); toast('已复制路径'); } catch(e){ toast('复制失败'); }
+      document.body.removeChild(t);
+    }
+  });
+
+  /* ---------------- 打赏 / 联系作者 ---------------- */
+  function openTip(){ $('tipModal').hidden = false; }
+  function closeTip(){ $('tipModal').hidden = true; }
+  $('btnTip').addEventListener('click', openTip);
+  $('btnTipClose').addEventListener('click', closeTip);
+  $('tipMask').addEventListener('click', closeTip);
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'Escape' || e.keyCode === 27) closeTip();
+  });
+  $('btnCopyQQ').addEventListener('click', function(){
+    var qq = ($('qqText').textContent || '').trim();
+    if (!qq) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(qq).then(function(){ toast('QQ 已复制：' + qq); },
+                                            function(){ toast('QQ：' + qq); });
+    } else {
+      var t = document.createElement('textarea');
+      t.value = qq; document.body.appendChild(t); t.select();
+      try { document.execCommand('copy'); toast('QQ 已复制：' + qq); }
+      catch (e) { toast('QQ：' + qq); }
+      document.body.removeChild(t);
+    }
+  });
+
+  /* 初始化 */
+  renderSteps();
+  loadEnv(false);
+})();
+</script>
+</body>
+</html>
