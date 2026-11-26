@@ -15,7 +15,7 @@ $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\TravelFrogGrab
 if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
 
 New-ItemProperty -Path $key -Name DisplayName     -Value $displayName -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $key -Name DisplayVersion  -Value '1.0'         -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $key -Name DisplayVersion  -Value '1.1'         -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $key -Name Publisher       -Value $publisher    -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $key -Name InstallLocation -Value $Dest         -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $key -Name DisplayIcon     -Value (Join-Path $Dest 'icon.ico') -PropertyType String -Force | Out-Null

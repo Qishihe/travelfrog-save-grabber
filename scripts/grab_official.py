@@ -325,7 +325,8 @@ def mitm_off(ips):
 
 # ---------------- 博物馆（账号真实点亮的藏品）----------------
 # 导航逻辑全部在 scripts/museum.py：
-#   进「菜单(790,65) → 小仓库(700,65) → 博物馆(649,696)」触发 museum_load。
+#   进「菜单(790,65) → 小仓库(700,65) → 博物馆」触发 museum_load；
+#   博物馆那格是截屏按颜色认「红牌坊」图标定位的（各渠道服格子数不同，不能写死坐标）。
 # 这里只留薄代理 —— grab_official.py 被整文件覆盖过两次，逻辑放模块里才不会跟着丢，
 # _apply_hw_patch.py 也只需要把旧函数换成下面这几行。
 def visit_museum(pkg=None, retries=3):
@@ -809,7 +810,7 @@ def main():
             got = False
             if opened:
                 # 博物馆数据可能走新连接（新会话目录），也可能续在旧会话上，两边都看
-                for _ in range(12):        # 最多约 24 秒
+                for _ in range(20):        # 最多约 40 秒
                     time.sleep(2)
                     pool = list(dict.fromkeys(sessions + _sessions_since(t_mus - 5)))
                     if museum_proto_seen(pool):
@@ -818,6 +819,21 @@ def main():
                         sessions = pool
                         time.sleep(1)
                         break
+                # 首次进馆偶发丢请求（模拟器 ARM 转译卡顿时，requestMuseum 没发出去），
+                # 退出去再进一次通常就有了——不然藏品只能退回底稿，白抓一趟。
+                if not got:
+                    print('   首次进馆没等到协议，退出去再进一次...')
+                    t_mus = time.time()
+                    if visit_museum(pkg, retries=2):
+                        for _ in range(8):     # 最多约 16 秒
+                            time.sleep(2)
+                            pool = list(dict.fromkeys(
+                                sessions + _sessions_since(t_mus - 5)))
+                            if museum_proto_seen(pool):
+                                got = True
+                                print('   已收到博物馆协议（museum_list，第二次触发）')
+                                sessions = pool
+                                break
             if not got:
                 print('   [!] 没收到博物馆协议，藏品退回底稿兜底（存档仍可用）')
 
@@ -861,7 +877,7 @@ def main():
             print('   [i] 未抓到美好瞬间协议（misc.moment_load）：本次不写入该字段。')
             print('       该项在完整登录时下发；如需补抓可加 --clear 重跑，或用编辑器的「美好瞬间」页手动勾选。')
 
-        # 存档文件名 = 昵称 + 旅行青蛙存档_官服抓取_ + 当前时间
+        # 存档文件名 = 导入单机版 + 昵称 + 旅行青蛙存档 + 当前时间
         # 昵称从刚解析出的 client.load_role.json 里取 frog.name，读不到就用「未知」
         nick = ''
         try:
@@ -874,7 +890,7 @@ def main():
         nick = re.sub(r'[\\/:*?"<>|\r\n\t]', '', nick)[:20] or '未知昵称'
         stamp = time.strftime('%Y%m%d_%H%M%S')
         base = base_template()
-        out_json = os.path.join(out_dir, '%s旅行青蛙存档_官服抓取_%s.json' % (nick, stamp))
+        out_json = os.path.join(out_dir, '导入单机版_%s_旅行青蛙存档_%s.json' % (nick, stamp))
         print('   存档命名：%s' % os.path.basename(out_json))
         rc, out = run([sys.executable, os.path.join(HERE, '生成实号存档.py'),
                        '--proto', proto_dir, '--base', base, '--out', out_json,
@@ -890,7 +906,7 @@ def main():
             sys.path.insert(0, os.path.join(ROOT, 'lib'))
             import tf as _tf
             _raw, _env = _tf.load(out_json)
-            raw_json = os.path.join(out_dir, os.path.basename(out_json).replace('.json', '') + '_原始数据_明文不可导入.json')
+            raw_json = os.path.join(out_dir, '%s_旅行青蛙官服存档_原始数据_%s.json' % (nick, stamp))
             json.dump(_raw, open(raw_json, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
             # 汇报博物馆藏品到底是"账号真实点亮"还是"底稿兜底"。
             # 判据看最终协议目录里有没有 museum_list 数组——这才是生成存档真正用到的数据。

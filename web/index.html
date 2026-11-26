@@ -232,7 +232,7 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
       <div class="logo">🐸</div>
       <div>
         <h1>旅行青蛙 · 存档抓取器</h1>
-        <p>一键抓取官服 / 米服存档 · 本地运行，数据不出电脑</p>
+        <p>当前可抓取：官服 · 米服 · 华为渠道服 · 本地运行，数据不出电脑</p>
       </div>
     </div>
     <div class="badges" id="badges"></div>
@@ -459,7 +459,7 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
       return api('/api/devices').then(function(dev){
         renderBadges(st, dev);
         if (showToast) toast(dev && dev.ok ? '已重新检测模拟器' : '检测失败，请确认模拟器已启动');
-        $('prepHint').textContent = '程序版本 v' + (st.version || '1.0');
+        $('prepHint').textContent = '程序版本 v' + (st.version || '1.1');
         hwLoad(false);
       });
     }).catch(function(){

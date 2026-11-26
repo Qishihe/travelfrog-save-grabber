@@ -62,7 +62,7 @@ echo  This folder only contains loose files. The grabber needs the
 echo  FULL portable package: runtime\ + scripts\ + tools\ + web\.
 echo.
 echo  HOW TO FIX:
-echo    1. Unzip TravelFrogGrabber_v1.0_setup.zip completely
+echo    1. Unzip TravelFrogGrabber_v1.1_setup.zip completely
 echo       (right-click - Extract All). Do NOT copy single files.
 echo    2. Open the extracted TravelFrogGrabber folder.
 echo    3. Run the bat inside THAT folder.

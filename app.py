@@ -76,11 +76,14 @@ def _scan_step(job, line):
 
 
 def _pick_save(dirpath, since=0):
-    """在目录里挑最新的一份「官服抓取」存档（排除原始数据明文，且必须是本次生成的）。"""
+    """挑本次生成的可导入存档：新命名「导入单机版_昵称_旅行青蛙存档_时间」，
+    兼容旧命名「…旅行青蛙存档_官服抓取_时间」。排除原始数据明文。"""
     best = None
     try:
         for f in os.listdir(dirpath):
-            if f.endswith('.json') and '官服抓取' in f and '原始数据' not in f:
+            is_save = f.endswith('.json') and '原始数据' not in f and (
+                ('导入单机版' in f and '旅行青蛙存档' in f) or '官服抓取' in f)
+            if is_save:
                 p = os.path.join(dirpath, f)
                 try:
                     mt = os.path.getmtime(p)
@@ -177,7 +180,7 @@ def status_info():
         'output': OUTPUT,
         'runtime': sys.executable,
         'running': bool(cur and cur.state == 'running'),
-        'version': '1.0',
+        'version': '1.1',
     }
 
 
@@ -500,7 +503,7 @@ def open_path(p):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'TravelFrogGrabber/1.0'
+    server_version = 'TravelFrogGrabber/1.1'
 
     def log_message(self, *a):
         pass
