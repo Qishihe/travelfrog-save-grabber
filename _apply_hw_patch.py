@@ -445,7 +445,7 @@ def parse_sessions(sessions, proto_dir):
             got = False
             if opened:
                 # 博物馆数据可能走新连接（新会话目录），也可能续在旧会话上，两边都看
-                for _ in range(12):        # 最多约 24 秒
+                for _ in range(20):        # 最多约 40 秒
                     time.sleep(2)
                     pool = list(dict.fromkeys(sessions + _sessions_since(t_mus - 5)))
                     if museum_proto_seen(pool):
@@ -454,13 +454,52 @@ def parse_sessions(sessions, proto_dir):
                         sessions = pool
                         time.sleep(1)
                         break
+                # 首次进馆偶发丢请求（模拟器 ARM 转译卡顿时，requestMuseum 没发出去），
+                # 退出去再进一次通常就有了——不然藏品只能退回底稿，白抓一趟。
+                if not got:
+                    print('   首次进馆没等到协议，退出去再进一次...')
+                    t_mus = time.time()
+                    if visit_museum(pkg, retries=2):
+                        for _ in range(8):     # 最多约 16 秒
+                            time.sleep(2)
+                            pool = list(dict.fromkeys(
+                                sessions + _sessions_since(t_mus - 5)))
+                            if museum_proto_seen(pool):
+                                got = True
+                                print('   已收到博物馆协议（museum_list，第二次触发）')
+                                sessions = pool
+                                break
             if not got:
                 print('   [!] 没收到博物馆协议，藏品退回底稿兜底（存档仍可用）')"""
     if OLD_BLOCK in txt:
         txt = txt.replace(OLD_BLOCK, NEW_BLOCK, 1)
         tags.append('博物馆:等待判据改成 museum_list')
     elif 'museum_proto_seen(pool)' in txt:
-        pass
+        # 已经打过补丁：把「只等 24 秒」的旧版本就地升级成「40 秒 + 二次触发」
+        if '首次进馆没等到协议' not in txt:
+            txt = txt.replace('for _ in range(12):        # 最多约 24 秒',
+                              'for _ in range(20):        # 最多约 40 秒', 1)
+            _OLD_TAIL = """            if not got:
+                print('   [!] 没收到博物馆协议，藏品退回底稿兜底（存档仍可用）')"""
+            _NEW_TAIL = """                # 首次进馆偶发丢请求（模拟器 ARM 转译卡顿时，requestMuseum 没发出去），
+                # 退出去再进一次通常就有了——不然藏品只能退回底稿，白抓一趟。
+                if not got:
+                    print('   首次进馆没等到协议，退出去再进一次...')
+                    t_mus = time.time()
+                    if visit_museum(pkg, retries=2):
+                        for _ in range(8):     # 最多约 16 秒
+                            time.sleep(2)
+                            pool = list(dict.fromkeys(
+                                sessions + _sessions_since(t_mus - 5)))
+                            if museum_proto_seen(pool):
+                                got = True
+                                print('   已收到博物馆协议（museum_list，第二次触发）')
+                                sessions = pool
+                                break
+""" + _OLD_TAIL
+            if _OLD_TAIL in txt:
+                txt = txt.replace(_OLD_TAIL, _NEW_TAIL, 1)
+                tags.append('博物馆:补上二次进馆')
     else:
         print('[!] 博物馆：没找到旧的等待逻辑，需人工检查')
 

@@ -27,10 +27,12 @@ if not exist "%SRC%\runtime\python\python.exe" (
 echo [1/4] 检查是否已有程序在运行...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*TravelFrogGrabber*app.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 
+if exist "%DEST%\tools\platform-tools\adb.exe" "%DEST%\tools\platform-tools\adb.exe" kill-server >nul 2>&1
+
 echo [2/4] 复制程序文件（首次安装约需十几秒）...
 if not exist "%DEST%" mkdir "%DEST%"
 robocopy "%SRC%" "%DEST%" /E /XD output logs __pycache__ .git /XF *.pyc /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >nul
-if errorlevel 8 (
+if errorlevel 16 (
   echo.
   echo [X] 复制文件失败。请确认抓取器已关闭，或手动删除 %DEST% 后重试。
   if not defined SILENT pause

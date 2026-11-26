@@ -13,9 +13,14 @@
 
 实测路径（旅行青蛙·中国之旅 1.0.20，基准 900x1600）：
     右上「菜单」(790,65) → 展开 工具栏/物品栏/小仓库/帮助 →「小仓库」(700,65)
-    → 九宫格弹窗 → 第 2 行第 3 个「博物馆」(649,696)
-旧版脚本写的是 (820,65)/(693,60)/(240,915)：前两下勉强擦到，第三下整个打偏，
-博物馆页从没真正打开过，museum_load 自然不下发、藏品只能用底稿兜底。
+    → 弹窗格子 →「博物馆」
+
+⚠ 格子排列不是所有服都一样，这是踩过的坑：
+    官服、米服   4 行 3 列（12 格）→ 博物馆 = 第 3 行第 1 列 ≈ (240,938)
+    华为渠道服   3 行 3 列（ 9 格）→ 博物馆 = 第 2 行第 3 列 ≈ (649,696)
+早先按 3x3 写死 (649,696)，在官服/米服上正好落在第 2 行第 3 列的「手工品」上——
+所以现在不再猜格子：弹窗一开就截屏按颜色找「红牌坊」图标（见 _find_museum_cell），
+坐标表只当认不出图标时的兜底，并且每轮重试换一个候选。
 """
 
 import os
@@ -31,9 +36,15 @@ if HERE not in sys.path:
 # ---- 坐标（900x1600 基准，按真实分辨率自动缩放）----
 TAP_MENU = (790, 65)       # 右上「菜单」（三叶草条右侧）
 TAP_STORAGE = (700, 65)    # 展开后的「小仓库」
-TAP_MUSEUM = (649, 696)    # 小仓库九宫格里第 2 行第 3 个
 TAP_BLANK = (450, 1450)    # 空白处（草地/地面），用来关掉遗留弹窗
 TAP_ENTER = (450, 1143)    # 启动页「点击进入游戏」
+TAP_BACK = (82, 60)        # 二级页面（博物馆/手工品/相册）左上角「返回」
+                           # 注意：这游戏的系统返回键是死的，keyevent 4 按了页面不动
+
+# 「博物馆」兜底坐标表：只在截屏认不出图标时按顺序试（见模块 docstring 的坑）。
+# 顺序 = 官服/米服(4x3) → 华为渠道服(3x3)。
+MUSEUM_CELLS = [(240, 938), (649, 696)]
+TAP_MUSEUM = MUSEUM_CELLS[0]   # 兼容旧名字，仅供盲点分支使用
 
 # ---- 截图判据（pnglite 口径）----
 # 实测：博物馆页 beige 0.56 / edge 0.64；小仓库弹窗 beige 0.36 / edge 0；
@@ -64,6 +75,17 @@ def _sh(cmd, t=90):
         return (p.stdout or b'').decode('utf-8', 'replace').strip()
     except Exception:
         return ''
+
+
+_SIZE = [None]
+
+
+def _size():
+    """屏幕真实分辨率，只问一次 adb 然后缓存（_tap 一秒能调好几次，别每次都开进程）。"""
+    if _SIZE[0] is None:
+        m = re.search(r'(\d+)x(\d+)', _sh('wm size'))
+        _SIZE[0] = (int(m.group(1)), int(m.group(2))) if m else (900, 1600)
+    return _SIZE[0]
 
 
 def _screen_png():
@@ -108,12 +130,82 @@ def on_museum_page():
     return st['beige'] >= MUSEUM_BEIGE and st['edge_beige'] >= MUSEUM_EDGE
 
 
+def _find_museum_cell():
+    """在小仓库弹窗里按颜色定位「博物馆」图标，返回 900x1600 基准坐标。
+
+    博物馆那格画的是红牌坊（两根红柱子 + 红屋檐），是弹窗里最密的砖红色块。
+    弹窗里另外三处红色都比较好排除：右下「公告」的感叹号（贴屏幕右缘）、
+    「礼品盒」的小红盒（红色像素只有牌坊的零头）、标题栏以外的场景杂色。
+    所以这里限定在弹窗主体区域找红色，取最密的簇算质心。
+
+    返回 None 表示没认出来（截屏失败 / 不在小仓库弹窗 / 图标风格变了），
+    调用方按 MUSEUM_CELLS 坐标表兜底。
+    """
+    png = _screen_png()
+    if not png:
+        return None
+    try:
+        import pnglite
+        w, h, bpp, px = pnglite.decode(png)
+    except Exception:
+        return None
+    if bpp < 3:
+        return None
+
+    # 弹窗主体（去掉屏幕右缘的公告按钮、顶部状态栏、底部小屋/商店）
+    x0, x1 = int(w * 0.10), int(w * 0.86)
+    y0, y1 = int(h * 0.18), int(h * 0.80)
+    bs = max(12, int(w * 0.03))
+    grid = {}
+    for y in range(y0, y1, 2):
+        base = y * w * bpp
+        for x in range(x0, x1, 2):
+            o = base + x * bpp
+            r, g, b = px[o], px[o + 1], px[o + 2]
+            if r > 120 and (r - g) > 50 and (r - b) > 50 and g < 140:
+                k = (x // bs, y // bs)
+                grid[k] = grid.get(k, 0) + 1
+    if not grid:
+        return None
+
+    # 最密的 bin 及其周围 1 圈的 bin 一起算质心
+    best = max(grid, key=grid.get)
+    sx = sy = n = 0
+    for (bx, by), c in grid.items():
+        if abs(bx - best[0]) <= 1 and abs(by - best[1]) <= 1:
+            sx += bx * bs * c
+            sy += by * bs * c
+            n += c
+    if n < 150:            # 红得太少，多半是礼品盒/杂色，不当真
+        return None
+    cx = sx / float(n) + bs * 0.5
+    cy = sy / float(n) + bs * 0.5
+    return (int(cx * 900 / w), int(cy * 1600 / h))
+
+
+def _back_to_scene(tries=2):
+    """把二级页面推回主场景。
+
+    点错格（比如进了「手工品」「相册」）之后，右上角菜单是点不动的，
+    不先退回来，后面所有点击都白费——这也是重试能救回来的前提。
+
+    三个坑：
+      · 这游戏的系统返回键是死的（keyevent 4 按下去页面纹丝不动），只能点左上角「返回」；
+      · 主场景左上角就是金币数字，点上去没有任何反应（实测无弹窗），所以可以无脑点，
+        不用先判断"我现在在哪一层"——判断本身才是容易出错的地方；
+      · 唯一不能点的是启动页，那儿整屏都是「进入游戏」热区，交给 _recover_splash。
+    """
+    st = screen_stats()
+    if st is not None and st['brightness'] > SPLASH_BRIGHT and st['beige'] < SPLASH_BEIGE:
+        return False
+    for _ in range(tries):
+        _tap(TAP_BACK, 1.4)
+    return True
+
+
 def _tap(xy, wait=1.2):
     """按 900x1600 基准坐标点按，自动按真实分辨率缩放。"""
-    w, h = 900, 1600
-    m = re.search(r'(\d+)x(\d+)', _sh('wm size'))
-    if m:
-        w, h = int(m.group(1)), int(m.group(2))
+    w, h = _size()
     _sh('input tap %d %d' % (int(xy[0] * w / 900), int(xy[1] * h / 1600)))
     time.sleep(wait)
 
@@ -197,6 +289,8 @@ def visit(pkg=None, retries=3):
         if not _recover_splash():
             print('   [%d/%d] 游戏还没进主界面（卡在启动页），重试' % (i, retries))
             continue
+        # 上一轮可能误点进了别的页面（手工品/相册…），先退回主场景
+        _back_to_scene()
         _dismiss_popups()
         if on_museum_page():
             print('   已在博物馆页')
@@ -205,7 +299,7 @@ def visit(pkg=None, retries=3):
         _tap(TAP_MENU, 1.8)          # 展开菜单
         _tap(TAP_STORAGE, 2.2)       # 小仓库
 
-        # 确认九宫格真的弹出来了，没弹就再点一次（最多两次）
+        # 确认弹窗真的弹出来了，没弹就再点一次（最多两次）
         st = None
         for _ in range(2):
             st = screen_stats()
@@ -217,7 +311,18 @@ def visit(pkg=None, retries=3):
                   % (i, retries, st['beige'], st['brightness']))
             continue
 
-        _tap(TAP_MUSEUM, 3.0)
+        # 认图标 > 猜坐标：格子数官服/米服是 4x3、华为服是 3x3，写死必点错格。
+        cell = _find_museum_cell()
+        if cell:
+            print('   已定位「博物馆」图标 %s' % (cell,))
+        else:
+            cells = MUSEUM_CELLS
+            if pkg and 'huawei' in pkg.lower():
+                cells = [MUSEUM_CELLS[1], MUSEUM_CELLS[0]]
+            cell = cells[(i - 1) % len(cells)]
+            print('   [!] 没认出「博物馆」图标，按坐标表试 %s' % (cell,))
+
+        _tap(cell, 3.0)
         if on_museum_page():
             print('   已打开博物馆页（第 %d 次尝试）' % i)
             return True
