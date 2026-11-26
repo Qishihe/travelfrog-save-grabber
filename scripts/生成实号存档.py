@@ -653,20 +653,30 @@ def map_calendar(save, protos):
 
 
 def map_greetcard(save, protos, enabled=True):
-    """节日趣闻（收到的贺卡）：官服 greetcard.load 的 get_list → 存档 greetCard.receivedList。
+    """节日趣闻（收到的贺卡）：官服 greetcard.load.get_list → v14 存档顶层 receivedCards。
 
-    原版单机版 offline-greetcard.js 把 get_list 写死成 []，且 sync() 会重建 greetCard，
-    所以**原版 APK 无论存档怎么写都看不到贺卡**，必须配合打过贺卡补丁的 APK。
-    存档侧只写 receivedList（补丁版 APK 优先读这里），greetCard 其它字段
-    （key/start/items/sendList/sent 等）保持原样，交给游戏自己同步。
+    v14（release_v14）改了读取位置：offline-greetcard.js 的 received() 只读顶层
+    draft.receivedCards，字段 {kind, bg, bless, tags[3], name, gift}；
+    v13.1 的「贺卡补丁版」读的是 greetCard.receivedList，v14 完全不认那个字段。
+    这里两份都写：receivedCards 给 v14，receivedList 给旧补丁版，互不干扰。
+
+    细节（对齐 v14 offline-official-merge.js 的贺卡并入逻辑）：
+      · 去掉 uid/partner/account/player/name 之外的隐私字段？这里反过来——name 保留官服真实
+        昵称（本机自己看的存档，stranger 名字照留），uid 不写进 v14 条目（原版也不存）。
+      · gift 是回礼礼物 id（>0 表示已回礼）；v14 的 sendGift 靠它判断能否再送礼。
+      · kind 固定 'mid'（中秋）；春节卡走 springcard.load，官服这两张表目前不混。
+      · 抓到的 get_list 有时是空 dict {}（账号没收到过卡），有时是 list；两种都要能处理。
+      · 如果两张卡 uid 相同但 bg/gift 不同仍算两张（官服同一蛙可能寄多次）。
     """
     if not enabled:
         return '跳过：--no-greetcard'
     d = data_of(protos, 'greetcard.load')
     got = (d or {}).get('get_list')
+    if isinstance(got, dict):          # 空 {} 表示没收到过贺卡；非空 dict 取 value 当列表
+        got = list(got.values()) if got else []
     if not isinstance(got, list) or not got:
-        return '跳过：没有 greetcard.load.get_list'
-    out, seen = [], set()
+        return '跳过：没有 greetcard.load.get_list（账号没收到过贺卡）'
+    out, old_fmt, seen = [], [], set()
     for c in got:
         if not isinstance(c, dict):
             continue
@@ -684,20 +694,32 @@ def map_greetcard(save, protos, enabled=True):
             continue
         while len(row['tags']) < 3:
             row['tags'].append(0)
-        ident = (row['uid'], row['bg'], row['gift'])
+        ident = (row['uid'], row['bg'], row['gift'], tuple(row['tags']))
         if ident in seen:
             continue
         seen.add(ident)
-        out.append(row)
+        old_fmt.append(row)                                  # v13.1 补丁版：带 uid
+        out.append({
+            'kind': 'mid',
+            'bg': row['bg'], 'bless': row['bless'],
+            'tags': row['tags'][:], 'name': row['name'], 'gift': row['gift'],
+        })                                                   # v14：顶层 receivedCards
     if not out:
         return '跳过：贺卡列表无有效条目'
+
+    prev = save.get('receivedCards')
+    n_old = len(prev) if isinstance(prev, list) else 0
+    save['receivedCards'] = out                              # v14 主入口
+    save['receivedCardNew'] = 1                              # 新卡红点，进游戏能立刻看到
+    if isinstance(save.get('officialFestivalCards'), list):
+        save.pop('officialFestivalCards', None)              # 旧版并入字段，留着会触发重复转换
+
     card = save.get('greetCard')
     if not isinstance(card, dict):
         card = {}
-    old = card.get('receivedList')
-    card['receivedList'] = out
+    card['receivedList'] = old_fmt                           # v13.1 贺卡补丁版兼容
     save['greetCard'] = card
-    return '节日趣闻 %d -> %d 张（官服真实）' % (len(old or []), len(out))
+    return '节日趣闻 %d -> %d 张（v14 receivedCards + v13.1 receivedList）' % (n_old, len(out))
 
 
 def map_party(save, protos):

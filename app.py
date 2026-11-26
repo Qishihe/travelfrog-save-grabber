@@ -180,7 +180,7 @@ def status_info():
         'output': OUTPUT,
         'runtime': sys.executable,
         'running': bool(cur and cur.state == 'running'),
-        'version': '1.1',
+        'version': '1.2',
     }
 
 
@@ -503,7 +503,7 @@ def open_path(p):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'TravelFrogGrabber/1.1'
+    server_version = 'TravelFrogGrabber/1.2'
 
     def log_message(self, *a):
         pass
