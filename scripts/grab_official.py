@@ -46,6 +46,12 @@ import time
 sys.stdout.reconfigure(encoding='utf-8', errors='replace', line_buffering=True)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+try:
+    import grab_diag as diag          # 抓不到流量时的自检/自愈（可选，缺了也能照常跑）
+except Exception:
+    diag = None
 ROOT = os.path.dirname(HERE)                       # 绿色包根目录（自包含，不依赖 D:\frog_tools）
 def _find_mitm():
     """定位 tools/mitm（代理/解析/证书）。
@@ -280,6 +286,18 @@ def mitm_on(ips):
            % (ip, HOST_PROXY))
     ON[0] = True
     print('   CA 挂载=%s，DNAT IP=%s' % ('是' if mounted.strip() not in ('0', '') else '否', ', '.join(ips)))
+    # 顺手验一下「模拟器 -> 宿主 8443」这一跳：换电脑最常见的坑就是这里被防火墙掐断，
+    # 而且表现极其迷惑——游戏照常能玩，代理却一条连接都收不到。
+    if diag:
+        try:
+            ok, why = diag.probe(sh, HOST_PROXY)
+            print('   宿主代理连通性：%s' % ('正常' if ok else '不通（%s）' % why))
+            if not ok:
+                print('   [!] 模拟器连不到宿主 8443，这一轮很可能抓不到任何数据。')
+                print('       放行方法：Windows 安全中心 -> 防火墙 -> 允许应用通过防火墙，')
+                print('       把 python.exe 的「专用」「公用」都勾上（首次弹窗点了取消会一直静默拦截）。')
+        except Exception:
+            pass
     return True
 
 
@@ -295,31 +313,160 @@ def mitm_off(ips):
     print('   已还原环境（iptables / 证书）')
 
 
-def visit_museum():
-    """进游戏博物馆页，触发服务器下发 museum_load（账号真实点亮的藏品）。
+# ---------------- 博物馆（账号真实点亮的藏品）----------------
+# 实测路径（旅行青蛙·中国之旅 1.0.20，基准 900x1600）：
+#   右上「菜单」(790,65) → 展开 工具栏/物品栏/小仓库/帮助 →「小仓库」(700,65)
+#   → 九宫格弹窗 → 第 2 行第 3 个「博物馆」(649,696)
+# 旧版写的是 (820,65)/(693,60)/(240,915)：前两下勉强擦到，第三下整个打偏，
+# 博物馆页从没打开过，所以 museum_load 一直没下发、藏品只能用底稿兜底。
+TAP_MENU = (790, 65)       # 右上「菜单」（三叶草条右侧）
+TAP_STORAGE = (700, 65)    # 展开后的「小仓库」
+TAP_MUSEUM = (649, 696)    # 小仓库九宫格里第 2 行第 3 个
+MUSEUM_HI = 0.45           # 博物馆页亮像素占比（实测 0.58；主界面 0.09、小仓库弹窗 0.27）
 
-    实测路径（900x1600）：主界面右上「菜单」(820,65) →「小仓库」(693,60)
-    →「博物馆」(240,915)。博物馆窗口一打开就会 requestMuseum()。
-    坐标按当前分辨率等比缩放，适配不同模拟器。失败不影响主流程。
-    """
+
+def _screen_png():
+    """截屏 PNG 字节；失败返回空。"""
     try:
-        rc, out = adb('shell', 'wm size')
-        m = re.search(r'(\d+)x(\d+)', out)
-        w, h = (int(m.group(1)), int(m.group(2))) if m else (900, 1600)
-        print('   博物馆入口（屏幕 %dx%d）' % (w, h))
-        for x, y in ((820, 65), (693, 60), (240, 915)):
-            sx, sy = int(x * w / 900), int(y * h / 1600)
-            sh('input tap %d %d' % (sx, sy))
-            time.sleep(1.2)
-        time.sleep(3)   # 等 museum_load 下发落盘
+        p = subprocess.run([ADB[0], '-s', SER[0], 'exec-out', 'screencap', '-p'],
+                           capture_output=True, timeout=40)
+        data = p.stdout or b''
+        return data if data[:8] == b'\x89PNG\r\n\x1a\n' else b''
+    except Exception:
+        return b''
+
+
+def screen_hi():
+    """整屏亮像素（亮度>200）占比。没有 PIL 或截屏失败时返回 None。"""
+    png = _screen_png()
+    if not png:
+        return None
+    try:
+        from PIL import Image
+        import io as _io
+        im = Image.open(_io.BytesIO(png)).convert('RGB')
+        im.thumbnail((60, 100))
+        px = im.load()
+        w, h = im.size
+        vals = []
+        for x in range(w):
+            for y in range(h):
+                r, g, b = px[x, y]
+                vals.append(0.299 * r + 0.587 * g + 0.114 * b)
+        return (sum(1 for v in vals if v > 200) / float(len(vals))) if vals else None
+    except Exception:
+        return None
+
+
+def on_museum_page():
+    """当前是否停在博物馆列表页。True/False，判断不了返回 None。"""
+    hi = screen_hi()
+    return None if hi is None else (hi >= MUSEUM_HI)
+
+
+def _tap(xy, wait=1.2):
+    """按 900x1600 基准坐标点按，自动按真实分辨率缩放。"""
+    w, h = 900, 1600
+    rc, out = adb('shell', 'wm size')
+    m = re.search(r'(\d+)x(\d+)', out)
+    if m:
+        w, h = int(m.group(1)), int(m.group(2))
+    x, y = int(xy[0] * w / 900), int(xy[1] * h / 1600)
+    sh('input tap %d %d' % (x, y))
+    time.sleep(wait)
+
+
+def _dismiss_popups():
+    """点空白处关掉遗留弹窗（回归奖励「收到物品」/分享求助力等）。
+    这些弹窗会吃掉后续点击，是博物馆路径失败的常见原因。"""
+    for _ in range(2):
+        _tap((450, 1450), 0.8)
+
+
+def visit_museum(retries=3):
+    """进「小仓库 → 博物馆」触发服务器下发 museum_load。返回是否打开成功。
+
+    模拟器是 ARM 转译跑的，动画比真机慢，菜单展开、九宫格弹窗都要等；
+    中途还可能被回归奖励/分享弹窗吃掉点击。所以每一步都截图核对，
+    不靠「点完就算」，失败整套重来。失败不影响主流程（藏品退回底稿兜底）。
+    """
+    if screen_hi() is None:
+        # 缺 PIL 或截不了图：退回盲点一遍，结果交给「有没有 museum_list」验证
+        _dismiss_popups()
+        _tap(TAP_MENU, 1.8)
+        _tap(TAP_STORAGE, 2.2)
+        _tap(TAP_MUSEUM, 3.0)
+        print('   [!] 截不了图，已盲点一遍（能否抓到看协议）')
         return True
-    except Exception as e:
-        print('   [!] 点博物馆失败：%s' % e)
-        return False
+
+    for i in range(1, retries + 1):
+        _dismiss_popups()
+        if on_museum_page():
+            print('   已在博物馆页')
+            return True
+
+        _tap(TAP_MENU, 1.8)          # 展开菜单：工具栏/物品栏/小仓库/帮助
+        _tap(TAP_STORAGE, 2.2)       # 小仓库：九宫格弹窗（亮像素约 0.22）
+
+        # 确认小仓库弹窗真的弹出来了，没弹就再点一次（最多两次）
+        for _ in range(2):
+            hi = screen_hi()
+            if hi is None or 0.14 <= hi <= 0.45:
+                break
+            _tap(TAP_STORAGE, 1.8)
+        if hi is not None and hi >= MUSEUM_HI:
+            print('   [%d/%d] 小仓库没打开（当前页亮度过高），重试' % (i, retries))
+            continue
+
+        _tap(TAP_MUSEUM, 3.0)        # 九宫格第 2 行第 3 个：博物馆
+        if on_museum_page():
+            print('   已打开博物馆页（第 %d 次尝试）' % i)
+            return True
+        print('   [%d/%d] 没进到博物馆页，重试...' % (i, retries))
+    return False
 
 
-def restart_game(pkg, clear=False, tap=(450, 1170), timeout=150):
-    """强制重启游戏、自动点「进入游戏」，同时等抓包数据稳定。返回本次会话目录列表。"""
+def _sessions_since(since):
+    """抓包目录里 s2c.bin 在 since 之后还在写的会话（按文件 mtime，不按目录 mtime——
+    目录 mtime 只在增删文件时变，续写同一个 s2c.bin 不会更新它）。"""
+    out = []
+    for d in glob.glob(os.path.join(CAP, '*')):
+        if not os.path.isdir(d):
+            continue
+        p = os.path.join(d, 's2c.bin')
+        try:
+            if os.path.isfile(p) and os.path.getmtime(p) >= since:
+                out.append(d)
+        except Exception:
+            pass
+    return out
+
+
+def museum_proto_seen(sessions):
+    """s2c.bin 里是否已出现博物馆列表（museum_list 是数组）。
+
+    注意 museumday.load 里也有 museum_list，但那是空对象 {}，不是藏品数组；
+    真回包才是 [{...},{...}]，所以必须匹配左方括号。
+    """
+    pat = re.compile(rb'"museum_list"\s*:\s*\[')
+    for d in sessions:
+        p = os.path.join(d, 's2c.bin')
+        if not os.path.isfile(p):
+            continue
+        try:
+            if pat.search(open(p, 'rb').read()):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def restart_game(pkg, clear=False, tap=(450, 1170), timeout=150, stall=0):
+    """强制重启游戏、自动点「进入游戏」，同时等抓包数据稳定。返回本次会话目录列表。
+
+    stall > 0 时：到该秒数还一个字节都没抓到就提前退出，交给上层自检，
+    免得流量根本没进代理时白等满 timeout（换电脑排查最耗时的就是这一段）。
+    """
     if pkg.lower().endswith('.huawei'):
         return restart_game_huawei(pkg, timeout=timeout)
 
@@ -372,6 +519,9 @@ def restart_game(pkg, clear=False, tap=(450, 1170), timeout=150):
         elif size > 0 and time.time() - last_change >= 8:
             print('   抓包数据已稳定')
             return sessions
+        elif stall and el >= stall:
+            print('   [%.0fs] 一个字节都没抓到，提前结束本轮（不等满 %ds）' % (el, timeout))
+            break
         time.sleep(2)
     return [d for d in glob.glob(os.path.join(CAP, '*'))
             if os.path.isdir(d) and os.path.getmtime(d) >= t0 - 3]
@@ -532,10 +682,60 @@ def merge_injected_logs(sessions, proto_dir):
                 added.append('美好瞬间 %d 个' % len(best['data']['list']))
     return added
 
+def _proto_len(v):
+    try:
+        return len(json.dumps(v, ensure_ascii=False))
+    except Exception:
+        return 0
+
+
+def _merge_into_proto_dir(src, proto_dir):
+    """把单会话解析出的一个协议文件并进总协议目录，返回是否写入。
+
+    不能简单地「大文件覆盖小的」：未注册的 cmd 会被解析成 unknown_NN，
+    而 NN 只在单会话内按出现顺序分配——不同会话里的 unknown_53 可能是两种协议。
+    直接按体积覆盖会把小的那份（博物馆 museum_list 常常就几行）整份丢掉。
+    这里改成按 data 的键合并：键不冲突就都留下，冲突取更完整的那个。
+    """
+    name = os.path.basename(src)
+    dst = os.path.join(proto_dir, name)
+    if not os.path.exists(dst):
+        shutil.copy2(src, dst)
+        return True
+    try:
+        old = json.load(open(dst, encoding='utf-8'))
+        new = json.load(open(src, encoding='utf-8'))
+    except Exception:
+        if os.path.getsize(src) > os.path.getsize(dst):
+            shutil.copy2(src, dst)
+            return True
+        return False
+
+    do, dn = old.get('data'), new.get('data')
+    if isinstance(do, dict) and isinstance(dn, dict):
+        merged = dict(do)
+        changed = False
+        for k, v in dn.items():
+            if k not in merged or _proto_len(v) > _proto_len(merged[k]):
+                merged[k] = v
+                changed = True
+        if changed:
+            old['data'] = merged
+            with open(dst, 'w', encoding='utf-8', newline='\n') as fh:
+                json.dump(old, fh, ensure_ascii=False)
+            return True
+        return False
+
+    if os.path.getsize(src) > os.path.getsize(dst):
+        shutil.copy2(src, dst)
+        return True
+    return False
+
+
 def parse_sessions(sessions, proto_dir):
     os.makedirs(proto_dir, exist_ok=True)
     n = 0
-    for d in sorted(sessions, key=size_of_s2c):     # 大的后解析，覆盖小的
+    for d in sorted(sessions, key=size_of_s2c):     # 大的后解析
         if size_of_s2c(d) < 1000:
             continue
         tmp = os.path.join(d, '_proto')
@@ -544,9 +744,7 @@ def parse_sessions(sessions, proto_dir):
             print('   [!] 解析 %s 失败：%s' % (os.path.basename(d), out.strip()[:200]))
             continue
         for f in glob.glob(os.path.join(tmp, '*.json')):
-            dst = os.path.join(proto_dir, os.path.basename(f))
-            if not os.path.exists(dst) or os.path.getsize(f) > os.path.getsize(dst):
-                shutil.copy2(f, dst)
+            if _merge_into_proto_dir(f, proto_dir):
                 n += 1
     return n
 
@@ -645,8 +843,6 @@ def main():
     print('包名: %s（%s）' % (pkg, PKG_LABEL.get(pkg, '未知渠道')))
     if pkg.lower().endswith('.huawei'):
         _hw_precheck(pkg)
-    if pkg.lower().endswith('.huawei'):
-        _hw_precheck(pkg)
 
     ips = resolve_ips()
     print('登录服务器: %s -> %s' % (LOGIN_HOST, ', '.join(ips)))
@@ -654,6 +850,8 @@ def main():
     out_dir = os.path.join(ROOT, 'output', '一键抓官服_%s' % time.strftime('%Y%m%d_%H%M%S'))
     proto_dir = os.path.join(out_dir, '协议')
     os.makedirs(out_dir, exist_ok=True)
+    extra_ips = []          # 自检时补加的劫持 IP，退出要一起撤
+    got = False        # 博物馆协议是否真的抓到（--no-museum 时保持 False）
 
     try:
         print('\n[1/5] 启动代理...')
@@ -676,24 +874,55 @@ def main():
             return 1
 
         print('\n[3/5] 重启游戏触发登录（会自动点「进入游戏」）...')
-        sessions = restart_game(pkg, clear=a.clear, tap=tuple(a.tap), timeout=a.timeout)
+        sessions = restart_game(pkg, clear=a.clear, tap=tuple(a.tap),
+                                timeout=a.timeout, stall=60)
         print('   本次会话 %d 个' % len(sessions))
+
+        # 一字节都没抓到 = 流量没进代理（不是解析问题）。自检整条链，能补的 IP 补上再试一轮。
+        if diag and sum(size_of_s2c(d) for d in sessions) == 0:
+            _ok, _real = diag.report(sh, ips, HOST_PROXY,
+                                     os.path.join(out_dir, '代理日志.txt'))
+            _added = [ip for ip in _real if ip not in ips]
+            for ip in _added:
+                _good, _err = diag.add_rule(sh, ip, HOST_PROXY)
+                if _good:
+                    print('   已补劫持 %s' % ip)
+                else:
+                    print('   [!] 补劫持 %s 失败：%s' % (ip, _err))
+            if _added:
+                ips = sorted(set(ips) | set(_added))
+                extra_ips.extend(_added)
+            elif _ok:
+                # 游戏还没连（读不到目标 IP），但宿主端口是通的 -> 全量劫持兜底
+                _good, _err = diag.add_all_rule(sh, HOST_PROXY)
+                if _good:
+                    print('   改用「出站 443 全量劫持」兜底再试一轮...')
+                else:
+                    print('   [!] 全量劫持规则加不上：%s' % _err)
+            sessions = restart_game(pkg, clear=False, tap=tuple(a.tap),
+                                    timeout=90, stall=45)
+            print('   重试会话 %d 个' % len(sessions))
 
         if not a.no_museum:
             # 独立步骤：游戏已进主界面、代理还在，此时进博物馆触发 museum_load。
             # 不在 restart_game 循环里做，避免被定时「进入游戏」点击打断。
             print('\n   [3.5/5] 进博物馆采真实藏品（触发 museum_load）...')
-            size_before = sum(size_of_s2c(d) for d in sessions)
-            if visit_museum():
-                # 等 s2c 增长（museum_load 下发）或最多 20 秒
-                for _ in range(10):
+            t_mus = time.time()
+            opened = visit_museum()
+            got = False
+            if opened:
+                # 博物馆数据可能走新连接（新会话目录），也可能续在旧会话上，两边都看
+                for _ in range(12):        # 最多约 24 秒
                     time.sleep(2)
-                    if sum(size_of_s2c(d) for d in sessions) > size_before:
-                        print('   已收到博物馆协议数据')
-                        time.sleep(2)
+                    pool = list(dict.fromkeys(sessions + _sessions_since(t_mus - 5)))
+                    if museum_proto_seen(pool):
+                        got = True
+                        print('   已收到博物馆协议（museum_list）')
+                        sessions = pool
+                        time.sleep(1)
                         break
-                else:
-                    print('   [!] 未检测到 museum_load 下发，博物馆藏品将用兜底')
+            if not got:
+                print('   [!] 没收到博物馆协议，藏品退回底稿兜底（存档仍可用）')
 
         print('\n[4/5] 还原环境 + 停代理...')
         sh('am force-stop %s' % pkg)
@@ -718,6 +947,13 @@ def main():
             print('   [!] 代理补抓日志合并失败：%s' % _e)
         names = sorted(os.path.basename(f)[:-5] for f in glob.glob(os.path.join(proto_dir, '*.json')))
         print('   解析出 %d 个协议文件，共 %d 个 cmd' % (n, len(names)))
+        if n == 0:
+            print('   [X] 一个协议都没解析出来 —— 模拟器的流量根本没进代理，不是解析问题。')
+            if diag:
+                for ln in diag.tail(os.path.join(out_dir, '代理日志.txt'), 8):
+                    print('       代理日志| %s' % ln)
+            print('       判断方法：日志只有「代理已启动」= 流量没进来（防火墙拦了 8443 / '
+                  '登录服 IP 不在劫持名单）；有「连接来自」没有「TLS 建立」= 证书没生效。')
         key = ['client.load_role', 'item.load_items', 'album.load_all',
                'travel.load_note', 'furniture.load_furniture']
         miss = [k for k in key if k not in names]
@@ -752,12 +988,37 @@ def main():
             return 1
 
         # 顺手留一份解密明文（原始数据），方便排查/二次编辑。明文没有 format 信封，不能导入游戏。
+        muse_line = None
         try:
             sys.path.insert(0, os.path.join(ROOT, 'lib'))
             import tf as _tf
             _raw, _env = _tf.load(out_json)
             raw_json = os.path.join(out_dir, os.path.basename(out_json).replace('.json', '') + '_原始数据_明文不可导入.json')
             json.dump(_raw, open(raw_json, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+            # 汇报博物馆藏品到底是"账号真实点亮"还是"底稿兜底"。
+            # 判据看最终协议目录里有没有 museum_list 数组——这才是生成存档真正用到的数据。
+            _mids = set()
+            _cfg = os.path.join(ROOT, 'data', 'config_json', 'museumData_json.json')
+            if os.path.isfile(_cfg):
+                for _m in json.load(open(_cfg, encoding='utf-8')).values():
+                    for _v in str((_m or {}).get('collection_id') or '').split(','):
+                        _v = _v.strip()
+                        if _v.isdigit():
+                            _mids.add(int(_v))
+            _lit = sorted(set(_raw.get('collections') or []) & _mids)
+            _real = False
+            for _f in glob.glob(os.path.join(proto_dir, '*.json')):
+                try:
+                    _d = (json.load(open(_f, encoding='utf-8')) or {}).get('data')
+                except Exception:
+                    continue
+                if isinstance(_d, dict) and isinstance(_d.get('museum_list'), list):
+                    _real = True
+                    break
+            if _mids:
+                muse_line = '博物馆藏品 %d/%d 件 %s（%s）' % (
+                    len(_lit), len(_mids), _lit,
+                    '账号真实点亮' if _real else '底稿兜底，未抓到真实数据')
         except Exception as _e:
             raw_json = None
             print('   [!] 原始数据备份失败：%s' % _e)
@@ -765,6 +1026,8 @@ def main():
         print('\n' + '=' * 68)
         print('  完成！可导入存档：')
         print('  %s' % out_json)
+        if muse_line:
+            print('  %s' % muse_line)
         if raw_json:
             print('  原始数据(明文备份)：%s' % raw_json)
         print('  协议目录：%s' % proto_dir)
@@ -781,6 +1044,12 @@ def main():
                 pass
         if ON[0]:
             mitm_off(ips if 'ips' in dir() else KNOWN_IPS)
+        if diag:
+            # 自检阶段补的 IP / 全量兜底规则，这里一并撤掉，避免退出后模拟器断网
+            try:
+                diag.cleanup(sh, HOST_PROXY, extra_ips if 'extra_ips' in dir() else ())
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':
