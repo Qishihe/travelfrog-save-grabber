@@ -75,7 +75,12 @@ if disp is None:  # 老目录只替换了 museum.py 时也能按原来的默认�
 # ---- 坐标（900x1600 基准，按真实分辨率自动缩放）----
 TAP_MENU = (790, 65)       # 右上「菜单」（三叶草条右侧）
 TAP_STORAGE = (700, 65)    # 展开后的「小仓库」
-TAP_BLANK = (450, 1450)    # 空白处（草地/地面），用来关掉遗留弹窗
+# 空白处（草地/地面），用来关掉遗留弹窗。
+# ⚠ 千万别点 (450,1450)：嘟嘟商人（背包仓鼠 NPC）来卖货时正好站在那儿，
+#   一点就开「小摊」卖货界面（真机实测 900x1600 下 (450,1450) 命中商人热区），
+#   后续菜单/小仓库点击全被卖货界面吃掉，看起来就像"识别到博物馆却点错地方"。
+#   实测安全点：(450,1100) 中部石头区、(82,60) 左上金币栏、(450,900) 中部空地。
+TAP_BLANK = (450, 1100)
 # 启动页「点击进入游戏」——不同渠道服位置不同：
 #   官服/米服/华为：y≈1143（底部）
 #   b 站服：        y≈960 （青蛙下方，实测点 1143 落在空白处进不去）
@@ -98,6 +103,14 @@ MUSEUM_EDGE = 0.40         # 左右边缘也是米黄——弹窗型页面这里
 STORAGE_BEIGE = (0.28, 0.46)   # 小仓库九宫格弹窗的米黄区间
 SPLASH_BRIGHT = 0.80
 SPLASH_BEIGE = 0.15
+
+# 嘟嘟商人「小摊」卖货界面（真机 900x1600 实测）：
+#   beige 0.197 / edge_beige 0.167 / brightness 0.410 / dark 0.037
+# 它很容易被 _is_storage_popup 误判成小仓库弹窗（beige 落在 0.14~0.45、
+# edge<0.25），导致流程以为弹窗开着、在卖货页上乱点一通。单独识别出来先退出。
+STALL_BEIGE = (0.12, 0.30)
+STALL_EDGE = (0.06, 0.28)      # 弹窗恒 0、博物馆 >0.4——只有小摊/主场景落在中间
+STALL_BRIGHT = (0.30, 0.55)
 
 ADB = [None]
 SER = [None]
@@ -210,6 +223,58 @@ def on_museum_page():
     return None if st is None else _museum_by_stats(st)
 
 
+def _band_colors(png, y0, y1, x0=0.0, x1=1.0):
+    """统计某个横向色带里的 [橙, 绿, 米黄] 占比（pnglite 口径，返回 None 表示解码失败）。
+
+    用于区分「嘟嘟商人小摊」这类整屏换底的界面：光看 page_stats 的 beige/edge
+    会和主场景、小仓库弹窗重叠，但小摊页有独一无二的配色——顶部橙色条纹 +
+    中部大片绿底，别的页面都没有。
+    """
+    try:
+        import pnglite
+        w, h, bpp, px = pnglite.decode(png)
+    except Exception:
+        return None
+    ya, yb = int(h * y0), int(h * y1)
+    xa, xb = int(w * x0), int(w * x1)
+    orange = green = beige = tot = 0
+    for y in range(ya, yb, 6):
+        base = y * w * bpp
+        for x in range(xa, xb, 6):
+            o = base + x * bpp
+            r, g, b = px[o], px[o + 1], px[o + 2]
+            tot += 1
+            if r > 180 and 120 < g < 205 and b < 130:
+                orange += 1
+            if g > r and g > b and g > 90:
+                green += 1
+            if r > 195 and g > 180 and b < 215 and (r - b) >= 25:
+                beige += 1
+    if not tot:
+        return None
+    return (orange / float(tot), green / float(tot), beige / float(tot))
+
+
+def on_stall_page():
+    """当前是不是误进了嘟嘟商人的「小摊」卖货界面。
+
+    真机实测（900x1600）：小摊页顶部橙条 beige≈0.85、中部绿底 green≈0.56；
+    主场景中部绿只有 0.11、小仓库弹窗/博物馆页绿更低。用这两个数一起判，
+    比单看 beige/edge 稳得多（小摊的 beige=0.20 会被 _is_storage_popup 误吃）。
+
+    进了小摊页，菜单/小仓库/格子全都点不动，必须先点左上角返回退出。
+    """
+    png = _screen_png()
+    if not png:
+        return False
+    top = _band_colors(png, 0.0, 0.14)
+    mid = _band_colors(png, 0.19, 0.69)
+    if not top or not mid:
+        return False
+    # 顶部橙黄横幅（beige 比例极高）+ 中部大片绿底
+    return top[2] >= 0.60 and mid[1] >= 0.35
+
+
 def _find_museum_cells(limit=3):
     """在小仓库弹窗里按颜色定位「博物馆」红牌坊图标，返回【多个】候选。
 
@@ -317,11 +382,42 @@ def _tap(xy, wait=1.2):
     time.sleep(wait)
 
 
+def _exit_stall(tries=2):
+    """从嘟嘟商人「小摊」卖货界面退回主场景（点左上角「返回」）。
+
+    卖货页底部「购买/庭院/小屋」那些按钮千万别点，点了会真花钱或跳页；
+    左上角返回是实测唯一安全的出口。返回后可能弹出的其它提示交给调用方继续清。
+    返回 True 表示已不在小摊页。
+    """
+    for _ in range(tries):
+        if not on_stall_page():
+            return True
+        _tap(TAP_BACK, 1.6)
+    return not on_stall_page()
+
+
 def _dismiss_popups():
-    """点空白处关掉遗留弹窗（回归奖励「收到物品」/分享求助力等）。
-    这些弹窗会吃掉后续点击，是博物馆路径失败的头号原因。"""
+    """关掉遗留弹窗（回归奖励「收到物品」/分享求助力/嘟嘟商人小摊等）。
+
+    ⚠ 以前无脑点两下空白，而老空白点 (450,1450) 正好是嘟嘟商人热区——
+    商人一来反而点开「小摊」，越点越乱。现在：
+      1) 先看是不是小摊页：是就点返回退出，不用空白点；
+      2) 其它遗留弹窗才点安全空白点 (450,1100)，且每点一次重新看状态；
+      3) 任意一步进了小摊，立刻退出。
+    """
     for _ in range(2):
-        _tap(TAP_BLANK, 0.8)
+        if on_stall_page():
+            print('   [!] 误进嘟嘟商人小摊，点返回退出')
+            _exit_stall()
+            break
+        st = screen_stats()
+        # 主场景/博物馆页不用清弹窗（点空白反而可能触发门、菜地、商人）
+        if st is not None and (st['beige'] < 0.12 or _museum_by_stats(st)):
+            break
+        _tap(TAP_BLANK, 0.9)
+    # 兜底：最后一律确认不在小摊
+    if on_stall_page():
+        _exit_stall()
 
 
 def _focus():
@@ -392,13 +488,24 @@ def _is_storage_popup(st=None):
     官服实测 beige 0.28~0.36，米服弹窗底色可能更深/更浅，写死区间会导致
     「弹窗其实开了，却以为没开」然后反复点菜单把它关掉。所以加宽松档：
     只要不是主场景（几乎无米黄）、也不是全屏米黄的博物馆页，就算弹窗。
+
+    ⚠ 嘟嘟商人「小摊」页 beige 0.20 / edge 0.17 正好落进宽松档，以前会被
+    当成弹窗，于是在卖货页上继续点格子——必须先排除。
     """
     st = st if st is not None else screen_stats()
     if not st:
         return False
+    if on_stall_page():
+        return False
+    # ⚠ 主场景 beige 0.417 / edge_beige 0.257 会落进下面的 beige 区间，
+    #   真机实测曾被误判成"弹窗已开"，于是拿主界面去跑颜色识别，认出
+    #   门/邮筒等假红块，点错地方。弹窗的左右边缘恒为游戏场景（edge≈0），
+    #   用 edge_beige<0.12 把主场景/博物馆页干净排除。
+    if st['edge_beige'] >= 0.12:
+        return False
     if STORAGE_BEIGE[0] <= st['beige'] <= STORAGE_BEIGE[1]:
         return True
-    return 0.14 <= st['beige'] < MUSEUM_BEIGE and st['edge_beige'] < 0.25
+    return 0.14 <= st['beige'] < MUSEUM_BEIGE
 
 
 def _wait_museum(seconds=6.0):
@@ -415,7 +522,11 @@ def _wait_museum(seconds=6.0):
         if st is not None:
             if _museum_by_stats(st):
                 return True
-            if st['beige'] >= 0.35 and st['edge_beige'] >= 0.25:
+            # 软判据必须把【主场景】排除在外：真机实测主场景 beige 0.417 /
+            # edge 0.257，博物馆页 beige 0.558 / edge 0.637。以前 edge>=0.25
+            # 会把主场景当成"接近博物馆"——点了主界面的假红块(门/邮筒)就误报
+            # 成功，流程再也不会去点真正的博物馆格。收紧到 edge>=0.45。
+            if st['beige'] >= 0.50 and st['edge_beige'] >= 0.45:
                 soft = True
         time.sleep(1.2)
     if soft:
@@ -484,9 +595,16 @@ def visit(pkg=None, retries=3):
         if not _recover_splash():
             print('   [%d/%d] 游戏还没进主界面（卡在启动页），重试' % (i, retries))
             continue
-        # 上一轮可能误点进了别的页面（手工品/相册…），先退回主场景
+        # 上一轮可能误点进了别的页面（手工品/相册/嘟嘟商人小摊…），先退回主场景
+        if on_stall_page():
+            print('   [!] 停在嘟嘟商人小摊页，点返回退出')
+            _exit_stall()
         _back_to_scene()
         _dismiss_popups()
+        # 清弹窗过程中可能又踩到商人（换点后概率极低，但留兜底）
+        if on_stall_page() and not _exit_stall():
+            print('   [%d/%d] 退不出小摊页，重试' % (i, retries))
+            continue
         if on_museum_page():
             print('   已在博物馆页')
             return True
@@ -506,7 +624,9 @@ def visit(pkg=None, retries=3):
         print('   博物馆候选格 %d 个：%s' % (len(candidates), candidates))
 
         for k, cell in enumerate(candidates):
-            # 上一点格进了别的页面就退回场景重开弹窗；没反应则继续点下一格
+            # 上一点格进了别的页面（含嘟嘟商人小摊）就退回场景重开弹窗
+            if on_stall_page():
+                _exit_stall()
             if not _is_storage_popup():
                 _back_to_scene()
                 _dismiss_popups()
