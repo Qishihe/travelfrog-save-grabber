@@ -529,7 +529,7 @@ def visit_museum(pkg=None, retries=3):
     """进博物馆页触发服务器下发 museum_load（实现见 scripts/museum.py）。"""
     try:
         import museum
-        museum.setup(ADB[0], SER[0])
+        museum.setup(ADB[0], SER[0], pkg)   # 必须带包名，否则定位不到虚拟显示
         return museum.visit(pkg, retries)
     except Exception as e:
         print('   [!] 博物馆模块加载失败：%s' % e)

@@ -14,7 +14,7 @@ echo     1. Start MuMu / LDPlayer emulator
 echo     2. Open TravelFrog (official or Mi server) and LOG IN
 echo     3. Keep the emulator running
 echo.
-echo   Grabber version: v2.5  (Python 3.8, Win7 compatible)
+echo   Grabber version: v2.6  (Python 3.8, Win7 compatible)
 echo.
 echo   The script will restart the game, grab the save, and print
 echo   the output path below. No manual clicks needed.
