@@ -179,6 +179,8 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
 .contact-row{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink2);flex-wrap:wrap}
 .contact-row .k{color:var(--ink3);font-size:12px;min-width:34px}
 .contact-row b{color:var(--ink);font-variant-numeric:tabular-nums;letter-spacing:.4px}
+.contact-row a{color:var(--green);text-decoration:none;border-bottom:1px dashed var(--greenB);word-break:break-all}
+.contact-row a:hover{color:var(--green2)}
 .pricetag{
   margin-left:auto;font-size:12px;color:#2f6f4c;background:var(--greenL);
   border:1px solid var(--greenB);border-radius:999px;padding:2px 9px;font-weight:600;
@@ -232,10 +234,11 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
       <div class="logo">🐸</div>
       <div>
         <h1>旅行青蛙 · 存档抓取器</h1>
-        <p>当前可抓取：官服 · 米服 · 华为渠道服 · 本地运行，数据不出电脑</p>
+        <p>当前可抓取：官服 · 米服 · 华为 · OPPO · vivo · b站 · 本地运行，数据不出电脑</p>
       </div>
     </div>
     <div class="badges" id="badges"></div>
+    <a class="btn sm" href="https://github.com/Qishihe/travelfrog-save-grabber" target="_blank" rel="noopener" title="源码公开，永久免费">⭐ 开源地址</a>
     <button class="btn sm tipbtn" id="btnTip" type="button">☕ 打赏 / 联系作者</button>
   </div>
 
@@ -247,6 +250,7 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
       <li>保持模拟器和游戏运行，回到这里点「开始抓取」</li>
       <li>抓取过程中游戏会被自动重启并点击「进入游戏」，<b>请不要手动操作模拟器</b></li>
       <li><b>华为渠道服</b>额外需要 HMS Core 与华为账号登录，见下方「华为渠道服」卡片</li>
+      <li><b>b站 / OPPO / vivo 渠道服</b>建议先在模拟器里手动登录一次到主界面，再开始抓取</li>
     </ol>
     <div class="note">抓取结束后，请<b>手动重开一次游戏</b>，让模拟器恢复正常联网。</div>
   </section>
@@ -259,10 +263,13 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
         <select id="fPkg">
           <option value="">自动识别（推荐）</option>
           <option value="com.aligames.lxqw.hhb">官服 · 阿里</option>
-          <option value="com.ali.croak.mi">米服</option>
+          <option value="com.ali.croak.mi">米服 · 小米</option>
           <option value="com.Aligames.lxqw.huawei">华为渠道服 · 阿里</option>
+          <option value="com.ali.croak.nearme.gamecenter">OPPO 渠道服 · nearme</option>
+          <option value="com.ali.croak.vivo">vivo 渠道服（官方已停运）</option>
+          <option value="com.ali.croak.bilibili">b站服 · 哔哩哔哩</option>
         </select>
-        <span class="desc">装了多个会自动依次抓取</span>
+        <span class="desc">装了多个会自动依次抓取；渠道服抓不到可先手动登录一次</span>
       </div>
       <div class="field">
         <label>adb 端口</label>
@@ -307,6 +314,11 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
       <div class="hwitem"><span class="k">CPU ABI</span><b id="hwAbi">—</b></div>
       <div class="hwitem"><span class="k">游戏包</span><b id="hwPkg">—</b></div>
     </div>
+    <div class="field" style="margin:8px 0 4px">
+      <label>游戏 APK 路径（修 ABI 用，可留空）</label>
+      <input id="hwGameApk" type="text" placeholder="留空 = 自动从模拟器提取已装 APK">
+      <span class="desc">ABI=x86 会闪退，需以 armeabi-v7a 重装。留空即可自动修；只有自动提取失败时才需手动填本机 APK 路径</span>
+    </div>
     <div class="actions">
       <button class="btn sm" id="btnHwRefresh" type="button">刷新状态</button>
       <button class="btn sm" id="btnHwPrepare" type="button">准备环境（装 HMS / 修 ABI）</button>
@@ -316,6 +328,57 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
     <p class="unit" id="hwNote">
       华为渠道服比官服多三道门：隐私协议 → 联运服务声明 → 启动页「我已阅读并同意」勾选，程序会自动处理。
       但<b>华为账号登录页有防截屏保护</b>，账号密码只能你自己在模拟器里输入；本工具不会替你登录、也不会记录密码。
+    </p>
+  </section>
+
+  <section class="card" id="oppoCard">
+    <div class="card-h">
+      <h2>OPPO 渠道服</h2>
+      <span class="hint" id="oppoHint">仅 OPPO 渠道服需要</span>
+    </div>
+    <div class="hwgrid">
+      <div class="hwitem"><span class="k">游戏包</span><b id="oppoPkg">—</b></div>
+      <div class="hwitem"><span class="k">登录状态</span><b id="oppoLogin">—</b></div>
+      <div class="hwitem"><span class="k">adb 端口</span><b id="oppoSerial">—</b></div>
+      <div class="hwitem"><span class="k">root</span><b id="oppoRoot">—</b></div>
+    </div>
+    <div class="actions">
+      <button class="btn sm" id="btnOppoRefresh" type="button">刷新状态</button>
+      <button class="btn sm danger" id="btnOppoLogout" type="button">退出 OPPO 账号（重新登录）</button>
+      <span class="hint" id="oppoAct"></span>
+    </div>
+    <p class="unit">
+      退出会依次清<b>游戏数据 → 外部存储 → OPPO 账号中心</b>（只清装了的），所以「登录信息删不掉」通常是
+      token 落在外部存储或账号中心里，而不是没清干净。<b>不影响服务器存档</b>。
+    </p>
+    <p class="unit">
+      <b>v2.4 起：</b>OPPO / 欢太账号域名（heytap、oppomobile、oppo.com 等）在抓包时<b>不解密、原样直通</b>，
+      长连接也不会被代理掐断，所以开着抓取器也能正常走账号认证、进游戏。以前「开了抓取器就进不去」
+      就是这两点造成的。登录页 /「切换账号」界面抓取器会<b>停手等你操作</b>，不会替你点。
+      顺序：先在模拟器里登录并进到庭院（没有登录态时）→ 再开始抓取；抓取时不要勾「清登录态」。
+    </p>
+  </section>
+
+  <section class="card" id="netCard">
+    <div class="card-h">
+      <h2>恢复联网（抓完进不去游戏时点这里）</h2>
+      <span class="hint" id="netHint">检测中…</span>
+    </div>
+    <div class="hwgrid">
+      <div class="hwitem"><span class="k">劫持规则</span><b id="netRules">—</b></div>
+      <div class="hwitem"><span class="k">证书目录</span><b id="netCa">—</b></div>
+      <div class="hwitem"><span class="k">根证书数</span><b id="netCaCount">—</b></div>
+    </div>
+    <div class="actions">
+      <button class="btn sm" id="btnNetRefresh" type="button">刷新状态</button>
+      <button class="btn sm" id="btnNetRestore" type="button">一键恢复联网</button>
+      <label class="sw" style="display:inline-flex"><input id="netReboot" type="checkbox"> 清理后仍异常就重启模拟器兜底</label>
+      <span class="hint" id="netAct"></span>
+    </div>
+    <p class="unit">
+      抓取会临时把模拟器 443 流量劫持到本机代理并替换根证书目录。若程序异常退出，残留规则会让
+      小米 / 华为 / OPPO 等渠道服<b>校验证书失败、卡在启动页进不去</b>。点「一键恢复联网」即可清除残留，
+      <b>不影响游戏数据和存档</b>；直接重启模拟器也能清掉。
     </p>
   </section>
 
@@ -366,6 +429,13 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
       <div class="contact-row" style="font-size:12.5px;color:var(--ink2)">
         <span>有偿代抓取存档：<b style="color:var(--ink)">5 元/次</b>，加好友备注「抓存档」。</span>
       </div>
+      <div class="contact-row" style="font-size:12.5px">
+        <span class="k">开源</span>
+        <a href="https://github.com/Qishihe/travelfrog-save-grabber" target="_blank" rel="noopener">github.com/Qishihe/travelfrog-save-grabber</a>
+      </div>
+      <div class="contact-row" style="font-size:12.5px;color:var(--ink2)">
+        <span>工具永久免费、源码公开；欢迎反馈问题或自行编译。</span>
+      </div>
     </div>
     <div class="warnbox">
       <b>⚠ 严禁用于高收费牟利。</b>本工具与存档数据仅供个人备份使用，禁止倒卖、批量代抓高价收费或任何商业用途；发现此类行为将停止提供帮助。
@@ -399,7 +469,101 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
   </div>
 </div>
 
+<div class="modal" id="oppoModal" hidden>
+  <div class="modal-mask" id="oppoMask"></div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-label="退出 OPPO 账号确认">
+    <button class="modal-x" id="btnOppoX" type="button" aria-label="关闭">×</button>
+    <h3>退出 OPPO 账号？</h3>
+    <p class="modal-sub">这会清除 OPPO 渠道服的游戏数据（含登录 token），让下次启动回到登录页</p>
+    <div class="hwconfirm">
+      <ul>
+        <li>下次启动游戏需要<b>重新登录 OPPO 账号</b></li>
+        <li><b>不影响</b>服务器上的存档与已下载资源</li>
+        <li>正在抓取时不能执行，请先停止任务</li>
+      </ul>
+      <label class="sw">
+        <input type="checkbox" id="oppoReboot">
+        <span>顺便重启模拟器<small>一般不需要；仅当清除后仍自动登录时才勾</small></span>
+      </label>
+    </div>
+    <div class="actions">
+      <button class="btn danger" id="btnOppoConfirm" type="button">确认退出 OPPO 账号</button>
+      <button class="btn" id="btnOppoCancel" type="button">取消</button>
+    </div>
+  </div>
+</div>
+
 <script>
+/* ============================================================
+   IE11 兼容层：Win7 自带 IE 没有 fetch / Promise，也没有 ES6。
+   这里用 XMLHttpRequest 实现一个最小 Promise + fetch，随后
+   页面里所有 api().then(...) 代码都无需改动即可在 IE11 运行。
+   ============================================================ */
+(function(){
+  if (window.fetch && window.Promise) return;
+
+  function MiniPromise(executor){
+    var state = 0, value = null, cbs = [], self = this;
+    function resolve(v){
+      if (state) return;
+      state = 1; value = v;
+      for (var i = 0; i < cbs.length; i++) cbs[i][0](v);
+    }
+    function reject(e){
+      if (state) return;
+      state = 2; value = e;
+      for (var i = 0; i < cbs.length; i++) cbs[i][1](e);
+    }
+    self.then = function(ok, bad){
+      return new MiniPromise(function(res2, rej2){
+        function handle(cb, alt){
+          return function(v){
+            if (typeof cb !== 'function'){ alt(v); return; }
+            try {
+              var r = cb(v);
+              if (r && typeof r.then === 'function') r.then(res2, rej2);
+              else res2(r);
+            } catch (e) { rej2(e); }
+          };
+        }
+        var pair = [handle(ok, resolve), handle(bad, reject)];
+        if (state === 1) pair[0](value);
+        else if (state === 2) pair[1](value);
+        else cbs.push(pair);
+      });
+    };
+    self.catch = function(bad){ return self.then(null, bad); };
+    try { executor(resolve, reject); } catch (e) { reject(e); }
+  }
+  if (!window.Promise) window.Promise = MiniPromise;
+
+  if (!window.fetch){
+    window.fetch = function(path, opt){
+      return new window.Promise(function(resolve, reject){
+        var xhr = new XMLHttpRequest();
+        opt = opt || {};
+        xhr.open(opt.method || 'GET', path, true);
+        var headers = opt.headers || {};
+        for (var k in headers) if (headers.hasOwnProperty(k)) xhr.setRequestHeader(k, headers[k]);
+        xhr.onreadystatechange = function(){
+          if (xhr.readyState !== 4) return;
+          var body = null;
+          try { body = JSON.parse(xhr.responseText); } catch (e) { body = null; }
+          // 模拟 fetch 的 Response：页面只用 .json() 和 .ok
+          resolve({
+            ok: xhr.status >= 200 && xhr.status < 300,
+            status: xhr.status,
+            json: function(){ return new window.Promise(function(r){ r(body); }); }
+          });
+        };
+        xhr.onerror = function(){ reject(new Error('network error')); };
+        try { xhr.send(opt.body != null ? opt.body : null); }
+        catch (e) { reject(e); }
+      });
+    };
+  }
+})();
+
 (function(){
   'use strict';
 
@@ -459,8 +623,10 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
       return api('/api/devices').then(function(dev){
         renderBadges(st, dev);
         if (showToast) toast(dev && dev.ok ? '已重新检测模拟器' : '检测失败，请确认模拟器已启动');
-        $('prepHint').textContent = '程序版本 v' + (st.version || '1.2');
+        $('prepHint').textContent = '程序版本 v' + (st.version || '2.5');
         hwLoad(false);
+        oppoLoad(false);
+        netLoad(false);
       });
     }).catch(function(){
       $('badges').innerHTML = '<span class="badge bad"><i></i>无法连接本地服务</span>';
@@ -481,8 +647,8 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
   function setStep(step, state){
     var nodes = $('steps').children;
     for (var i = 0; i < nodes.length; i++) {
-      var n = nodes[i], s = +n.dataset.s;
-      n.classList.remove('now', 'done');
+      var n = nodes[i], s = +(n.getAttribute('data-s') || n.dataset.s || 0);
+      n.className = n.className.replace(/\b(now|done)\b/g, '').replace(/\s+/g, ' ').trim();
       if (s < step) n.classList.add('done');
       else if (s === step && state === 'running') n.classList.add('now');
       else if (s === step && state === 'done') n.classList.add('done');
@@ -629,11 +795,13 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
     acc.className = st.account ? 'ok' : 'bad';
     hms.textContent = st.hms_installed ? '已安装' : '缺失';
     hms.className = st.hms_installed ? 'ok' : 'bad';
-    abi.textContent = st.abi || '—';
-    abi.className = (st.abi && st.abi.toLowerCase().indexOf('arm') >= 0) ? 'ok' : 'bad';
+    var abiBad = st.abi && st.abi.toLowerCase().indexOf('arm') < 0;
+    abi.textContent = st.abi ? (st.abi + (abiBad ? '（会闪退）' : '')) : '—';
+    abi.className = abiBad ? 'bad' : 'ok';
     pkg.textContent = st.pkg_installed ? '已安装' : '未安装';
     pkg.className = st.pkg_installed ? 'ok' : 'bad';
-    $('hwHint').textContent = st.account ? '已登录 · ' + (st.screen || '') : '尚未登录华为账号';
+    $('hwHint').textContent = abiBad ? 'ABI 会闪退 → 点「准备环境」自动修'
+                                     : (st.account ? '已登录 · ' + (st.screen || '') : '尚未登录华为账号');
     if (st.account) $('hwConfirmName').textContent = st.account;
   }
 
@@ -667,8 +835,13 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
         return;
       }
       hwConfirmClose();
-      toast(r.changed ? '已退出华为账号' : (r.message || '当前没有登录账号'));
-      $('hwAct').textContent = r.message || '已处理';
+      if (r.need_reboot) {
+        toast('账号库已清空，重启模拟器后才生效');
+        $('hwAct').textContent = r.message || '账号库已清空，请重启模拟器';
+      } else {
+        toast(r.changed ? '已退出华为账号' : (r.message || '当前没有登录账号'));
+        $('hwAct').textContent = r.message || '已处理';
+      }
       hwLoad(false);
     }).catch(function(e){
       btn.disabled = false; btn.textContent = '确认退出华为账号';
@@ -680,14 +853,17 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
     var btn = $('btnHwPrepare');
     if (btn.disabled) return;
     btn.disabled = true;
-    $('hwAct').textContent = '正在检查 HMS Core 与 ABI…';
-    post('/api/huawei/prepare', {port: hwPort()}).then(function(r){
+    $('hwAct').textContent = '正在检查 HMS Core 与 ABI（必要时重装游戏，可能要 1–2 分钟）…';
+    var gameApk = ($('hwGameApk') && $('hwGameApk').value || '').trim();
+    post('/api/huawei/prepare', {port: hwPort(), gameApk: gameApk}).then(function(r){
       btn.disabled = false;
       var parts = [];
       if (r.hms) parts.push('HMS：' + (r.hms.message || r.hms.error || '未知'));
       if (r.abi) {
-        parts.push('ABI：' + (r.abi.ok ? (r.abi.changed ? '已改为 ' + r.abi.abi : r.abi.abi + '（无需改）')
+        parts.push('ABI：' + (r.abi.ok ? (r.abi.changed ? '已改为 ' + r.abi.abi
+                                                        : r.abi.abi + '（无需改）')
                                         : (r.abi.error || '未知')));
+        if (r.abi.changed && r.abi.source) parts.push('来源：' + r.abi.source);
       }
       $('hwAct').textContent = parts.join('；') || (r.error || '');
       toast(r.ok ? '环境已就绪' : '未完全就绪，见下方说明');
@@ -695,6 +871,130 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
     }).catch(function(e){
       btn.disabled = false;
       toast('操作失败：' + e);
+    });
+  }
+
+  /* ---------------- OPPO 渠道服 ---------------- */
+  function oppoPort(){ return ($('fPort').value || '').trim(); }
+
+  function oppoRender(st){
+    var pkg = $('oppoPkg'), login = $('oppoLogin'), serial = $('oppoSerial'), root = $('oppoRoot');
+    if (!st || !st.ok) {
+      pkg.textContent = '—'; pkg.className = '';
+      login.textContent = '—'; login.className = '';
+      serial.textContent = '—'; serial.className = '';
+      root.textContent = '—'; root.className = '';
+      $('oppoHint').textContent = (st && st.error) ? st.error : '仅 OPPO 渠道服需要';
+      return;
+    }
+    pkg.textContent = st.pkg_installed ? '已安装' : '未安装';
+    pkg.className = st.pkg_installed ? 'ok' : 'bad';
+    if (st.logged === true) { login.textContent = '已登录'; login.className = 'ok'; }
+    else if (st.logged === false) { login.textContent = '未登录'; login.className = 'bad'; }
+    else { login.textContent = '无法检测'; login.className = ''; }
+    serial.textContent = st.serial || '—'; serial.className = '';
+    root.textContent = st.root ? '是' : '否'; root.className = '';
+    $('oppoHint').textContent = st.logged === false ? '当前未登录，抓前请先手动登录'
+                              : (st.hint || 'OPPO 渠道服');
+  }
+
+  function oppoLoad(showToast){
+    $('oppoHint').textContent = '检测中…';
+    var q = oppoPort() ? ('?port=' + encodeURIComponent(oppoPort())) : '';
+    api('/api/oppo/status' + q).then(function(st){
+      oppoRender(st);
+      if (showToast) toast(st && st.ok ? 'OPPO 渠道服状态已刷新' : '检测失败');
+    }).catch(function(){ oppoRender({ok:false, error:'检测失败，模拟器可能没启动'}); });
+  }
+
+  function oppoConfirmOpen(){ $('oppoModal').hidden = false; }
+  function oppoConfirmClose(){ $('oppoModal').hidden = true; }
+
+  function oppoLogout(){
+    var btn = $('btnOppoConfirm');
+    if (btn.disabled) return;
+    btn.disabled = true; btn.textContent = '正在退出…';
+    $('oppoAct').textContent = '正在清除 OPPO 账号数据，别关程序';
+    post('/api/oppo/logout', {
+      confirm: true, port: oppoPort(), reboot: $('oppoReboot').checked
+    }).then(function(r){
+      btn.disabled = false; btn.textContent = '确认退出 OPPO 账号';
+      if (!r.ok) {
+        toast(r.error || '退出失败');
+        $('oppoAct').textContent = r.error || '';
+        return;
+      }
+      oppoConfirmClose();
+      var msg = r.message || '已退出 OPPO 账号';
+      if (r.steps && r.steps.length) {
+        var bad = r.steps.filter(function(s){ return !s.ok; });
+        if (bad.length) {
+          msg += ' ⚠ 有 ' + bad.length + ' 步没成功：' +
+                 bad.map(function(s){ return s.step; }).join('、') +
+                 '（多半是权限或被设备管理器拦住）';
+        }
+      }
+      toast(msg);
+      $('oppoAct').textContent = msg;
+      oppoLoad(false);
+    }).catch(function(e){
+      btn.disabled = false; btn.textContent = '确认退出 OPPO 账号';
+      toast('退出失败：' + e);
+    });
+  }
+
+  /* ---------------- 恢复联网 ---------------- */
+  function netPort(){ return ($('fPort').value || '').trim(); }
+
+  function netRender(st){
+    var rules = $('netRules'), ca = $('netCa'), cnt = $('netCaCount');
+    if (!st || !st.ok) {
+      rules.textContent = '—'; ca.textContent = '—'; cnt.textContent = '—';
+      rules.className = ca.className = cnt.className = '';
+      $('netHint').textContent = (st && st.error) ? st.error : '检测失败';
+      return;
+    }
+    rules.textContent = st.rules + ' 条';
+    rules.className = st.rules === 0 ? 'ok' : 'bad';
+    ca.textContent = st.ca_mounted ? '被替换（异常）' : '正常';
+    ca.className = st.ca_mounted ? 'bad' : 'ok';
+    cnt.textContent = String(st.ca_count);
+    cnt.className = st.ca_count >= 100 ? 'ok' : 'bad';
+    $('netHint').textContent = (st.rules === 0 && !st.ca_mounted)
+      ? '联网正常' : '有抓包残留，建议恢复';
+  }
+
+  function netLoad(showToast){
+    $('netHint').textContent = '检测中…';
+    var q = netPort() ? ('?port=' + encodeURIComponent(netPort())) : '';
+    api('/api/net/status' + q).then(function(st){
+      netRender(st);
+      if (showToast) toast(st && st.ok ? '联网状态已刷新' : '检测失败');
+    }).catch(function(){ netRender({ok:false, error:'检测失败，模拟器可能没启动'}); });
+  }
+
+  function netRestore(){
+    var btn = $('btnNetRestore');
+    if (btn.disabled) return;
+    btn.disabled = true;
+    $('netAct').textContent = '正在清除劫持规则、还原证书目录…';
+    post('/api/net/restore', {
+      port: netPort(), reboot: $('netReboot').checked
+    }).then(function(r){
+      btn.disabled = false;
+      if (!r.ok) {
+        toast(r.error || '恢复失败');
+        $('netAct').textContent = r.error || '';
+        netLoad(false);
+        return;
+      }
+      toast('联网已恢复');
+      $('netAct').textContent = '已清除残留：劫持规则 ' +
+        ((r.before && r.before.rules) || 0) + ' → ' + ((r.after && r.after.rules) || 0) + ' 条';
+      netLoad(false);
+    }).catch(function(e){
+      btn.disabled = false;
+      toast('恢复失败：' + e);
     });
   }
 
@@ -708,6 +1008,14 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
   $('btnHwCancel').addEventListener('click', hwConfirmClose);
   $('btnHwX').addEventListener('click', hwConfirmClose);
   $('hwMask').addEventListener('click', hwConfirmClose);
+  $('btnOppoRefresh').addEventListener('click', function(){ oppoLoad(true); });
+  $('btnOppoLogout').addEventListener('click', oppoConfirmOpen);
+  $('btnOppoConfirm').addEventListener('click', oppoLogout);
+  $('btnOppoCancel').addEventListener('click', oppoConfirmClose);
+  $('btnOppoX').addEventListener('click', oppoConfirmClose);
+  $('oppoMask').addEventListener('click', oppoConfirmClose);
+  $('btnNetRefresh').addEventListener('click', function(){ netLoad(true); });
+  $('btnNetRestore').addEventListener('click', netRestore);
   $('btnClearLog').addEventListener('click', function(){ $('log').innerHTML = ''; });
   $('btnAuto').addEventListener('click', function(){
     autoScroll = !autoScroll;

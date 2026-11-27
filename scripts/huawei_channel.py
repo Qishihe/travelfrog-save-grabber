@@ -30,6 +30,15 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+# 华为服也会被 MuMu KeepAlive 放进虚拟显示：过协议/点进入游戏的截图与点击
+# 必须跟游戏窗口走同一块屏，否则会停在启动页或误判黑屏。
+try:
+    import game_display as disp
+except Exception:
+    disp = None
 
 HW_PKG = 'com.Aligames.lxqw.huawei'          # 华为渠道服
 HMS_PKG = 'com.huawei.hwid'                  # 华为移动服务（HMS Core）
@@ -152,13 +161,26 @@ def _scaled(xy):
 
 def tap(xy):
     x, y = _scaled(xy)
+    if disp:
+        disp.setup(ADB[0], SER[0], HW_PKG)
+        if disp.tap_base(x, y):
+            return
     sh('input tap %d %d' % (x, y))
 
 
 def focus_activity():
+    """读焦点窗口；默认屏第一行常是 null，取最后一条有效记录。"""
+    if disp:
+        disp.setup(ADB[0], SER[0], HW_PKG)
+        hit = disp.focus()
+        if hit:
+            return hit
     out = sh('dumpsys window | grep -i mCurrentFocus')
-    m = re.search(r'u0\s+([^\s}]+)', out)
-    return m.group(1) if m else ''
+    hits = re.findall(r'u0\s+([^\s}]+)', out)
+    for h in reversed(hits):
+        if h and h.lower() not in ('null', 'nan'):
+            return h
+    return hits[0] if hits else ''
 
 
 def ui_texts():
@@ -200,22 +222,99 @@ def account_count():
 
 
 # ---------------------------------------------------------------- 退出账号
+def _have_sqlite3():
+    """模拟器里有没有 sqlite3 二进制（不少模拟器镜像没带）。"""
+    return bool(sh('command -v sqlite3 2>/dev/null').strip()
+                or sh('ls /system/bin/sqlite3 /system/xbin/sqlite3 2>/dev/null').strip())
+
+
 def _sqlite(db, sql):
-    """执行 sqlite3 语句；库/表不存在时静默跳过（不同 Android 版本表结构有差异）。"""
-    rc, out = sh("sqlite3 %s \"%s\" 2>&1" % (db, sql))
-    low = out.lower()
+    """执行 sqlite3 语句；库/表不存在时静默跳过（不同 Android 版本表结构有差异）。
+
+    这里以前写成 rc, out = sh(...)，但 sh() 只返回输出字符串，
+    于是每次「退出华为账号」都在解包时抛
+    ValueError: not enough values to unpack —— 这个功能从未真正可用过。
+    """
+    try:
+        rc, out = adb('shell', 'sqlite3 %s "%s" 2>&1' % (db, sql))
+    except Exception as e:
+        return False, str(e)
+    low = (out or '').lower()
     if 'no such table' in low or 'unable to open' in low or 'no such file' in low:
         return False, out
     return rc == 0, out
 
 
-def logout(reboot=True, wait=180):
+DE_DB = '/data/system_de/0/accounts_de.db'
+CE_DB = '/data/system_ce/0/accounts_ce.db'
+
+
+def db_account_count(db=DE_DB):
+    """账号库里还剩几条华为账号；查询失败返回 None（不可判定）。"""
+    try:
+        rc, out = adb('shell',
+                      "sqlite3 %s \"select count(*) from accounts where type='%s';\""
+                      % (db, HW_ACCOUNT_TYPE))
+    except Exception:
+        return None
+    t = (out or '').strip()
+    if t.isdigit():
+        return int(t)
+    return None
+
+
+def db_remaining():
+    """DE / CE 两个库里华为账号的剩余条数；都读不到时返回 None。"""
+    de = db_account_count(DE_DB)
+    ce = db_account_count(CE_DB)
+    if de is None and ce is None:
+        return None
+    return (de or 0) + (ce or 0)
+
+
+def _reset_db():
+    """备份后删库。系统下次启动会自动重建空库。
+
+    没有 sqlite3 二进制、或 sqlite 删了但残留时用这条兜底。
+    副作用：系统里所有账号一起清掉 —— 对「换号抓取」正是想要的结果。
+    """
+    for db in (DE_DB, CE_DB):
+        sh('cp -f %s /data/local/tmp/%s.bak 2>/dev/null' % (db, os.path.basename(db)))
+        sh('rm -f %s %s-wal %s-shm' % (db, db, db))
+
+
+def _clear_db():
+    """从两个账号库里删掉华为账号，返回 (剩余条数, 明细步骤)。
+
+    DE 库有 grants / visibility / shared_accounts 关联表，先清子表再删主记录；
+    CE 库的 accounts 上挂了级联触发器，authtokens / extras 会跟着走。
+    """
+    sel = "select _id from accounts where type='%s'" % HW_ACCOUNT_TYPE
+    steps = []
+    for tbl in ('grants', 'visibility'):
+        rc, out = _sqlite(DE_DB, "delete from %s where accounts_id in (%s);" % (tbl, sel))
+        steps.append('%s:%s' % (tbl, 'ok' if rc else (out or 'skip')[:40]))
+    for db, tbl in ((DE_DB, 'shared_accounts'), (DE_DB, 'accounts'), (CE_DB, 'accounts')):
+        rc, out = _sqlite(db, "delete from %s where type='%s';" % (tbl, HW_ACCOUNT_TYPE))
+        steps.append('%s.%s:%s' % (os.path.basename(db), tbl,
+                                   'ok' if rc else (out or 'skip')[:40]))
+    return db_remaining(), steps
+
+
+def logout(reboot=True, wait=300, soft=True):
     """一键退出系统里的华为账号。
 
     华为账号归 AccountManagerService 管，pm clear 清不掉，必须动账号库：
-      /data/system_de/0/accounts_de.db  —— accounts / grants / visibility / shared_accounts
-      /data/system_ce/0/accounts_ce.db  —— accounts / authtokens / extras（删除走级联触发器）
-    删完必须 reboot，否则服务内存里还揣着缓存，游戏照样免登录。
+      DE 库 accounts / grants / visibility / shared_accounts
+      CE 库 accounts / authtokens / extras（删除走级联触发器）
+
+    v2.3 修了两个把它卡死的坑：
+    1. 旧代码删完用 dumpsys 判断成败。dumpsys 读的是系统服务**内存缓存**，
+       库已经删空它也照样显示有账号 —— 于是判定「删除失败」直接 return，
+       永远走不到重启，账号永远不消失（这就是「还是清除不了」）。
+       现在改成查库计数：库空就算删成功。
+    2. 重启后 adb 会一直停在 offline，旧代码只循环 getprop、不重连，
+       白等 180 秒后报超时。现在会主动 disconnect/connect 等它回来。
     """
     if not SER[0]:
         return {'ok': False, 'error': '没连上模拟器'}
@@ -224,53 +323,137 @@ def logout(reboot=True, wait=180):
         return {'ok': False, 'error': '需要 root 才能操作系统账号库：%s' % msg}
 
     before = huawei_accounts()
-    if not before:
-        return {'ok': True, 'changed': False, 'message': '当前没有登录中的华为账号',
-                'accounts': []}
+    db_before = db_remaining()
+    if not before and not db_before:
+        return {'ok': True, 'changed': False, 'accounts': [],
+                'message': '当前没有登录中的华为账号'}
 
     sh('am force-stop %s' % HW_PKG)
     sh('am force-stop %s' % HMS_PKG)
     time.sleep(1)
 
-    de = '/data/system_de/0/accounts_de.db'
-    ce = '/data/system_ce/0/accounts_ce.db'
-    sel = "select _id from accounts where type='%s'" % HW_ACCOUNT_TYPE
-    # DE 库：先清关联表，再删主记录
-    for tbl in ('grants', 'visibility'):
-        _sqlite(de, "delete from %s where accounts_id in (%s);" % (tbl, sel))
-    _sqlite(de, "delete from shared_accounts where type='%s';" % HW_ACCOUNT_TYPE)
-    _sqlite(de, "delete from accounts where type='%s';" % HW_ACCOUNT_TYPE)
-    # CE 库：accounts 上挂了 triggers，authtokens / extras 会级联删除
-    _sqlite(ce, "delete from accounts where type='%s';" % HW_ACCOUNT_TYPE)
+    method = 'sqlite'
+    steps = []
+    if _have_sqlite3():
+        left, steps = _clear_db()
+    else:
+        left = None
+        _reset_db()
+        left = db_remaining()
+        if left is None:
+            left = 0
+        method = 'reset_db'
 
-    left = huawei_accounts()
-    if left:
-        return {'ok': False, 'error': '账号库删除后仍存在记录，可能被系统服务回写',
-                'accounts': left, 'need_reboot': True}
+    if left is None:
+        return {'ok': False, 'accounts': before, 'steps': steps,
+                'error': '账号库读写失败（sqlite3 打不开 %s）。请确认模拟器已 root。' % DE_DB}
 
-    if reboot:
-        adb('reboot', t=20)
-        if wait:
-            _wait_boot(wait)
+    if left > 0:
+        # sqlite 删了但库里还有 → 备份后整库重置
+        _reset_db()
+        method = 'reset_db'
+        left = db_remaining()
+        if left is None:
+            left = 0
 
-    return {
-        'ok': True, 'changed': True, 'rebooted': bool(reboot),
-        'removed': [a['name'] for a in before],
-        'accounts': huawei_accounts(),
-        'message': '已退出华为账号，游戏下次启动会要求重新登录。',
-    }
+    if left > 0:
+        return {'ok': False, 'accounts': before, 'steps': steps,
+                'error': '账号库清了 %d 条后仍有残留，可能存在 -wal 未提交。'
+                         '请在模拟器里手动重启一次再点退出。' % left}
+
+    cached = huawei_accounts()
+    detail = {'db_cleared': True, 'method': method, 'steps': steps,
+              'before': [a['name'] for a in before],
+              'cached_accounts': [a['name'] for a in cached]}
+
+    if not reboot:
+        return dict(detail, ok=True, changed=True, need_reboot=True,
+                    message='账号库已清空。系统账号服务还揣着内存缓存，'
+                            '重启模拟器后才会真正消失（游戏下次启动要重新登录）。')
+
+    back, how, secs = _restart(timeout=wait, soft=soft)
+    if not back:
+        return dict(detail, ok=False, need_manual_reboot=True,
+                    error='账号库已清空，但模拟器 %d 秒内没恢复 adb 连接。'
+                          '请手动重启模拟器 —— 重启后账号即消失，不需要再点一次退出。' % wait)
+
+    # 重启后 adb 掉了 root，重新提权只是为了能再查库；读 dumpsys 不需要 root
+    ensure_root()
+    after = huawei_accounts()
+    if after:
+        return dict(detail, ok=False, need_manual_reboot=True, accounts=after,
+                    error='重启后系统里仍有华为账号（%s）。'
+                          '账号被华为服务自动恢复了，请在模拟器「设置 → 账号」里手动移除。'
+                          % ', '.join(a['name'] for a in after))
+
+    return dict(detail, ok=True, changed=True, accounts=[], restart=how,
+                elapsed=secs, message='已退出华为账号，游戏下次启动会要求重新登录。')
 
 
-def _wait_boot(timeout=180):
+def _adb_alive():
+    """adb 通、且系统已开机完成。"""
+    if not SER[0]:
+        return False
+    try:
+        rc, out = run([ADB[0], '-s', SER[0], 'shell', 'getprop sys.boot_completed'], 15)
+    except Exception:
+        return False
+    return rc == 0 and (out or '').strip() == '1'
+
+
+def _reconnect():
+    """重启后 adb 常停在 offline，必须主动断/连一次才会恢复。
+
+    这是「退出账号一直失败」的第二个坑：旧代码只循环 getprop，
+    adb 永远回 offline，就永远等不到开机完成，最后报超时。
+    """
+    if not SER[0]:
+        return
+    target = SER[0]
+    try:
+        if ':' in target:
+            run([ADB[0], 'disconnect', target], 10)
+            run([ADB[0], 'connect', target], 15)
+        else:
+            run([ADB[0], 'wait-for-device'], 20)
+    except Exception:
+        pass
+
+
+def _wait_boot(timeout=300):
     t0 = time.time()
-    time.sleep(5)
+    time.sleep(3)
+    n = 0
     while time.time() - t0 < timeout:
-        out = sh('getprop sys.boot_completed', t=15)
-        if out.strip() == '1':
+        if _adb_alive():
             time.sleep(2)
             return True
-        time.sleep(4)
+        n += 1
+        if n % 2 == 0:
+            _reconnect()
+        time.sleep(3)
     return False
+
+
+def _restart(timeout=300, soft=True):
+    """重启模拟器并等它真正可用，返回 (是否回来, 方式, 秒数)。
+
+    先试软重启（setprop ctl.restart zygote）：实测 adb 只掉 ~20 秒、
+    约 1 分钟可用，比 adb reboot 快一倍；不行再整机重启兜底。
+    """
+    t0 = time.time()
+    if soft:
+        sh('setprop ctl.restart zygote', t=20)
+        # 先等 adb 真的掉线再等它回来，否则会读到重启前的旧 boot_completed=1
+        time.sleep(8)
+        if _wait_boot(timeout=min(160, max(60, timeout))):
+            return True, 'soft', int(time.time() - t0)
+    try:
+        adb('reboot', t=20)
+    except Exception:
+        pass
+    left = max(60, timeout - int(time.time() - t0))
+    return _wait_boot(timeout=left), 'full', int(time.time() - t0)
 
 
 # ---------------------------------------------------------------- 装 HMS / 修 ABI
@@ -295,25 +478,59 @@ def ensure_hms(apk=None):
     return {'ok': False, 'installed': False, 'error': out[-300:]}
 
 
+def installed_apk(pkg=HW_PKG):
+    """从模拟器里读出已安装 APK 的真实路径（pm path），用于免手输重装。
+
+    MuMu/雷电上 base.apk 对 shell 可读（实测 -rw-r--r-- system:system），
+    所以 ARM 转译重装不必让玩家再去找当初的安装包。
+    """
+    out = sh('pm path %s' % pkg)
+    m = re.search(r'package:(.+\.apk)', out)
+    return m.group(1).strip() if m else ''
+
+
 def ensure_abi(apk=None):
-    """阿里聚安全的 x86 加固库在模拟器上必崩，逼它走 armeabi-v7a + houdini 转译。"""
+    """阿里聚安全的 x86 加固库在模拟器上必崩，逼它走 armeabi-v7a + houdini 转译。
+
+    apk 传外部路径则用它；不传时自动从模拟器 pm path 抠已装 APK，
+    避免「修 ABI 必须手输 APK」导致修复分支变成没人能走的死代码。
+    """
     abi = primary_abi(HW_PKG)
     if not abi:
         return {'ok': False, 'error': '读不到 primaryCpuAbi（游戏没装？）'}
     if 'arm' in abi.lower():
         return {'ok': True, 'abi': abi, 'changed': False}
-    if not apk or not os.path.isfile(apk):
-        return {'ok': False, 'abi': abi, 'changed': False,
-                'error': '当前是 %s，需要以 armeabi-v7a 重装，但没找到 APK 文件' % abi}
-    rc, out = adb('install', '-r', '-t', '--abi', 'armeabi-v7a', apk, t=420)
+
+    # 1) 优先用玩家显式给的 APK（外部文件）
+    if apk and os.path.isfile(apk):
+        rc, out = adb('install', '-r', '-t', '--abi', 'armeabi-v7a', apk, t=420)
+        src = os.path.basename(apk)
+    else:
+        # 2) 自动路径：pm path 拿到已装 base.apk，先复制到 /data/local/tmp 再覆盖安装
+        #    （报告实测的有效路径就是 /data/local/tmp/*.apk，避免直接装 /data/app 下被占用的文件）
+        in_dev = installed_apk(HW_PKG)
+        if not in_dev:
+            return {'ok': False, 'abi': abi, 'changed': False,
+                    'error': '当前是 %s，需要以 armeabi-v7a 重装，但模拟器里也找不到游戏 APK'
+                             '（游戏没装或 pm path 失败）。可手动指定 --game-apk。' % abi}
+        tmp_apk = '/data/local/tmp/lxqw_hw_abi.apk'
+        sh('cp %s %s' % (in_dev, tmp_apk), t=180)
+        out = sh('pm install -r -t --abi armeabi-v7a %s' % tmp_apk, t=420)
+        sh('rm -f %s' % tmp_apk)
+        src = '模拟器内已装 APK（pm path 自动提取）'
+
     if 'Success' in out:
-        return {'ok': True, 'abi': primary_abi(HW_PKG), 'changed': True}
-    return {'ok': False, 'abi': abi, 'changed': False, 'error': out[-300:]}
+        return {'ok': True, 'abi': primary_abi(HW_PKG), 'changed': True, 'source': src}
+    return {'ok': False, 'abi': abi, 'changed': False,
+            'error': (out or '重装无输出')[-300:]}
 
 
 # ---------------------------------------------------------------- 启动过页
 def _screen_png():
-    """截屏（PNG 字节）；失败返回空。"""
+    """截【游戏所在显示】的 PNG 字节；失败返回空。"""
+    if disp:
+        disp.setup(ADB[0], SER[0], HW_PKG)
+        return disp.screencap()
     try:
         p = subprocess.run([ADB[0], '-s', SER[0], 'exec-out', 'screencap', '-p'],
                            capture_output=True, timeout=40,
@@ -384,6 +601,9 @@ def launch(pkg=HW_PKG, timeout=180):
     time.sleep(1)
     sh('logcat -c', t=20)
     sh('am start -n %s/com.Aligames.lxqw.MainActivity' % pkg, t=40)
+    if disp:
+        disp.setup(ADB[0], SER[0], pkg)
+        print('   [hw] 显示检测：%s' % disp.info())
     print('   [hw] 游戏已启动，等启动页加载…')
 
     t0 = time.time()
@@ -493,6 +713,10 @@ def main():
     ap.add_argument('--apk', help='HMS Core 安装包路径（prepare 用，默认 tools/apk/hmscore.apk）')
     ap.add_argument('--game-apk', help='游戏 APK 路径（修 ABI 需要；不传则只做检查）')
     ap.add_argument('--no-reboot', action='store_true', help='退出账号后不重启模拟器')
+    ap.add_argument('--no-soft', action='store_true',
+                    help='退出账号后直接整机重启（默认先软重启 zygote，更快）')
+    ap.add_argument('--wait', type=int, default=300,
+                    help='退出账号后等模拟器恢复的秒数（默认 300）')
     ap.add_argument('--timeout', type=int, default=180, help='launch 等待秒数')
     a = ap.parse_args()
 
@@ -504,7 +728,7 @@ def main():
     if a.cmd == 'status':
         res = status()
     elif a.cmd == 'logout':
-        res = logout(reboot=not a.no_reboot)
+        res = logout(reboot=not a.no_reboot, wait=a.wait, soft=not a.no_soft)
     elif a.cmd == 'prepare':
         r1 = ensure_hms(a.apk)
         r2 = ensure_abi(a.game_apk)

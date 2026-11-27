@@ -7,6 +7,8 @@ title 旅行青蛙存档抓取器 · 安装
 
 set "SRC=%~dp0"
 if "%SRC:~-1%"=="\" set "SRC=%SRC:~0,-1%"
+rem v2.5 起的安装包：最外层只放安装/说明/卸载，程序本体在 TravelFrogGrabber\ 里
+if exist "%SRC%\TravelFrogGrabber\runtime\python\python.exe" set "SRC=%SRC%\TravelFrogGrabber"
 set "DEST=%LOCALAPPDATA%\TravelFrogGrabber"
 
 echo ============================================================
@@ -17,8 +19,9 @@ echo   安装到：%DEST%
 echo.
 
 if not exist "%SRC%\runtime\python\python.exe" (
-  echo [X] 当前目录不是完整的安装包（缺 runtime\python）。
-  echo     请先把压缩包完整解压，再运行本安装程序。
+  echo [X] 找不到程序本体：缺少 TravelFrogGrabber\runtime\python。
+  echo     请把压缩包完整解压，再双击最外层的「安装.bat」。
+  echo     若只解压了安装脚本，请重新完整解压整个压缩包。
   echo.
   if not defined SILENT pause
   exit /b 1

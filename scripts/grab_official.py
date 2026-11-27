@@ -3,7 +3,8 @@
 
 做的事（按顺序全自动）：
   1. 找 adb、自动探测模拟器端口、自动识别包名（官服 com.aligames.lxqw.hhb 优先，
-     米服 com.ali.croak.mi、华为渠道服 com.Aligames.lxqw.huawei 也认）
+     米服 com.ali.croak.mi、华为渠道服 com.Aligames.lxqw.huawei、b站服 com.ali.croak.bilibili、
+     OPPO 渠道服 com.ali.croak.nearme.gamecenter、vivo 渠道服 com.ali.croak.vivo 也认）
   2. 动态解析登录服务器 ali-lxqw-login.ejoy.com 的所有 A 记录（不再写死 IP）
   3. 启动 TLS 中间人代理 ws_proxy.py
   4. 装自签 CA + iptables 把登录服务器 443 重定向到代理
@@ -20,7 +21,7 @@
 
 常用参数：
     --port 16384   指定模拟器 adb 端口（默认自动探测 16384/7555/5555/...）
-    --pkg <包名>    指定包名，或写 官服/米服/华为（默认自动识别）
+    --pkg <包名>    指定包名，或写 官服/米服/华为/b站（默认自动识别）
     --clear         清登录态强制全量（大协议更全，但可能需要重新扫码登录）
     --no-album      不补抓相册图层（默认补抓，照片才有伙伴/构图）
     --tap X Y       「进入游戏」按钮坐标（默认 450 1170，按模拟器分辨率调整）
@@ -33,6 +34,7 @@
 """
 import argparse
 import glob
+import hashlib
 import json
 import os
 import io
@@ -43,7 +45,11 @@ import subprocess
 import sys
 import time
 
-sys.stdout.reconfigure(encoding='utf-8', errors='replace', line_buffering=True)
+# 老系统/老 Python 可能没有 reconfigure（3.7+ 才有），缺了也不能让脚本在 import 阶段就崩
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace', line_buffering=True)
+except Exception:
+    pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -52,6 +58,18 @@ try:
     import grab_diag as diag          # 抓不到流量时的自检/自愈（可选，缺了也能照常跑）
 except Exception:
     diag = None
+try:
+    import game_display as disp       # 游戏可能在虚拟 display（MuMu KeepAlive）
+except Exception:
+    disp = None
+try:
+    import cert_install               # 系统 CA 必须挂进 zygote/应用 mount namespace
+except Exception:
+    cert_install = None
+try:
+    import game_boot as boot          # 启动页：勾协议 / 点同意弹窗 / 认登录页
+except Exception:
+    boot = None
 ROOT = os.path.dirname(HERE)                       # 绿色包根目录（自包含，不依赖 D:\frog_tools）
 def _find_mitm():
     """定位 tools/mitm（代理/解析/证书）。
@@ -78,11 +96,17 @@ CA_NAME = '7108b1b3.0'                             # openssl x509 -subject_hash_
 HOST_PROXY = '10.0.2.2:8443'
 LOGIN_HOST = 'ali-lxqw-login.ejoy.com'
 KNOWN_IPS = ['120.79.229.17', '47.106.101.196']    # 兜底：历史 A 记录
-PKGS = ['com.aligames.lxqw.hhb', 'com.ali.croak.mi', 'com.Aligames.lxqw.huawei']  # 官服/米服优先
+PKGS = ['com.aligames.lxqw.hhb', 'com.ali.croak.mi',
+        'com.Aligames.lxqw.huawei', 'com.ali.croak.bilibili',
+        'com.ali.croak.nearme.gamecenter',   # OPPO 渠道服（nearme = OPPO 游戏中心）
+        'com.ali.croak.vivo']                # vivo 渠道服（官方 2025-04 已停运，保留识别）
 PKG_LABEL = {
     'com.aligames.lxqw.hhb': '阿里官服',
     'com.ali.croak.mi': '米服',
     'com.Aligames.lxqw.huawei': '华为渠道服',
+    'com.ali.croak.bilibili': 'b站服',
+    'com.ali.croak.nearme.gamecenter': 'OPPO渠道服',
+    'com.ali.croak.vivo': 'vivo渠道服',
 }
 PKG_ALIAS = {
     '官服': 'com.aligames.lxqw.hhb', 'aligames': 'com.aligames.lxqw.hhb',
@@ -90,7 +114,20 @@ PKG_ALIAS = {
     '米服': 'com.ali.croak.mi', 'mi': 'com.ali.croak.mi',
     '华为': 'com.Aligames.lxqw.huawei', 'huawei': 'com.Aligames.lxqw.huawei',
     'hw': 'com.Aligames.lxqw.huawei',
+    # b 站服（哔哩哔哩渠道）：登录域名未知，抓包走 host-all 兜底
+    'b站': 'com.ali.croak.bilibili', 'b服': 'com.ali.croak.bilibili',
+    'bilibili': 'com.ali.croak.bilibili', 'bili': 'com.ali.croak.bilibili',
+    # OPPO 渠道服（nearme = OPPO 游戏中心）/ vivo 渠道服
+    'oppo': 'com.ali.croak.nearme.gamecenter', 'o服': 'com.ali.croak.nearme.gamecenter',
+    'nearme': 'com.ali.croak.nearme.gamecenter',
+    'vivo': 'com.ali.croak.vivo', 'v服': 'com.ali.croak.vivo',
 }
+# 全渠道统一走 host-all 解密：
+# 早期只给登录域名不固定的渠道服开，结果官服反被"按 SNI 过滤"坑惨——
+# 阿里云 ALB 的登录域名会变、客户端还可能 IP 直连导致 SNI 为空，
+# 代理只认 LOGIN_HOST 时会把真正的游戏流量全透传（连接进来但 0 次 TLS 建立）。
+# 解析脚本只认协议 cmd，多解密的 MuMu 遥测/账号 SDK 流量会被自动忽略，无副作用。
+HOST_ALL_PKGS = set(PKGS)
 # 华为渠道服：启动流程多三道门（隐私协议 / 联运声明 / 启动页勾选），交给 huawei_channel 处理
 HW_PKG = 'com.Aligames.lxqw.huawei'
 PORTS = ['16384', '7555', '5555', '7556', '62001', '62026', '5554']
@@ -236,7 +273,7 @@ def detect_serial(want_port=None, want_pkg=None):
 
 
 def installed_pkgs():
-    """列出模拟器里已安装的所有官服/米服/华为渠道服包名（去重、按 PKGS 顺序）。"""
+    """列出模拟器里已装的官服/米服/华为/OPPO/vivo/b站渠道服包名（去重、按 PKGS 顺序）。"""
     # 华为渠道服包名是 com.Aligames.lxqw.huawei（大写 A），不区分大小写才不会漏
     out = sh("pm list packages | grep -i -E 'aligames|croak'")
     have = set(l.strip().replace('package:', '') for l in out.splitlines() if l.strip())
@@ -269,23 +306,163 @@ def resolve_ips():
     return sorted(ips)
 
 
+def verify_cert_pair():
+    """用 Python ssl 在本地做一次真实 TLS 握手，验证 ca.pem 能验过 srv.pem。
+
+    v1.4 重签过 CA（换了密钥但保留 subject，文件名 hash 仍是 7108b1b3.0）。
+    如果升级时只覆盖了 srv.pem 没覆盖 ca.pem（或反之），文件名和 subject 都
+    看不出异常，但客户端会全部握手失败——表现就是「连接进来几千条、解密 0 条」。
+    这里直接做握手自检，不配套就大声报错，不再静默抓空。
+    返回 (ok, msg)，纯标准库实现，不依赖 openssl 命令行。
+    """
+    import ssl, socket, threading, hashlib
+    ca = os.path.join(MITM, 'ca.pem')
+    srvp = os.path.join(MITM, 'srv.pem')
+    srvk = os.path.join(MITM, 'srv.key')
+    try:
+        for p in (ca, srvp, srvk):
+            if not os.path.isfile(p):
+                return False, '缺少证书文件 %s' % os.path.basename(p)
+        sctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        sctx.load_cert_chain(srvp, srvk)
+        cctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        cctx.check_hostname = False
+        cctx.verify_mode = ssl.CERT_REQUIRED
+        cctx.load_verify_locations(cafile=ca)
+    except Exception as e:
+        return False, '证书文件加载失败：%s' % e
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+    except Exception as e:
+        return True, '（跳过握手自检：无法开本地端口 %s）' % e
+
+    def _server():
+        try:
+            conn, _ = listener.accept()
+            with sctx.wrap_socket(conn, server_side=True) as t:
+                t.recv(1)
+        except Exception:
+            pass
+        finally:
+            try:
+                listener.close()
+            except Exception:
+                pass
+
+    threading.Thread(target=_server, daemon=True).start()
+    try:
+        with socket.create_connection(('127.0.0.1', port), timeout=5) as raw:
+            with cctx.wrap_socket(raw, server_hostname='localhost') as t:
+                t.send(b'x')
+        fp = hashlib.md5(open(ca, 'rb').read()).hexdigest()[:8]
+        return True, 'ca.pem ↔ srv.pem 配套（CA 指纹 %s）' % fp
+    except Exception as e:
+        return False, ('ca.pem 验不过 srv.pem —— 证书新旧混装！'
+                       '请完整解压安装包，确保 ca.pem / srv.pem / srv.key 三个一起覆盖。'
+                       '（%s）' % e)
+
+
+def free_proxy_port():
+    """启动代理前清掉占用 8443 的残留代理进程。
+
+    抓取任务被强杀/程序直接关掉时，ws_proxy 子进程会变成孤儿一直监听 8443。
+    新代理绑不上端口，游戏流量就进了那个**旧代码**的代理——旧版没有账号域名
+    透传、长连接还会被 15 秒超时掐断，于是玩家看到「开着抓取器进不去游戏」。
+    """
+    if os.name != 'nt':
+        return []
+    port = HOST_PROXY.rsplit(':', 1)[-1]
+    flags = 0x08000000
+    try:
+        r = subprocess.run(['netstat', '-ano'], capture_output=True,
+                           timeout=20, creationflags=flags)
+        # netstat 在中文 Windows 上是 GBK，不能按 UTF-8 解
+        out = (r.stdout or b'').decode('gbk', 'ignore')
+    except Exception:
+        return []
+    pids = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or 'LISTEN' not in line.upper():
+            continue
+        if parts[1].rsplit(':', 1)[-1] != port:
+            continue
+        pid = parts[-1]
+        if pid.isdigit() and int(pid) > 4 and int(pid) not in pids:
+            pids.append(int(pid))
+    killed = []
+    for pid in pids:
+        try:
+            r = subprocess.run(['taskkill', '/F', '/PID', str(pid)],
+                               capture_output=True, timeout=10, creationflags=flags)
+            if r.returncode == 0:
+                killed.append(pid)
+        except Exception:
+            pass
+    if killed:
+        time.sleep(1)
+    return killed
+
+
+def proxy_port_busy():
+    """8443 是否仍被占用（残留代理没清掉时用来说明原因）。"""
+    port = int(HOST_PROXY.rsplit(':', 1)[-1])
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(('0.0.0.0', port))
+        return False
+    except OSError:
+        return True
+    finally:
+        s.close()
+
+
 def mitm_on(ips):
-    """注入 CA + DNAT。"""
-    sh('rm -rf %s; mkdir -p %s; cp %s/* %s/ 2>/dev/null' % (TMP_DIR, TMP_DIR, CACERT_DIR, TMP_DIR))
+    """注入 CA + DNAT。
+
+    关键：不能只在 adb shell 里 mount --bind /system/etc/security/cacerts。
+    Android 10+ 的每个应用都有独立 mount namespace（实测 shell 4026531840、
+    zygote64 4026532201、应用 4026532208），shell 侧挂载对游戏不可见，
+    表现就是客户端 SSLV3_ALERT_CERTIFICATE_UNKNOWN、抓不到任何游戏流量。
+    现在由 cert_install 同时挂到 shell + zygote/zygote64，并按 CA 的 MD5 校验。
+    """
+    if cert_install is None:
+        print('   [X] 缺少 scripts/cert_install.py，无法把证书装进游戏可见的命名空间。')
+        print('       请完整解压安装包，不要只替换部分脚本。')
+        return False
+    ok, src, n, detail = cert_install.prepare(sh, TMP_DIR)
+    print('   证书目录：%s' % detail)
+    if not ok:
+        print('   [X] 准备系统根证书失败：%s' % detail)
+        return False
     rc, out = adb('push', CA_PEM, '//data//local//tmp//cacerts//' + CA_NAME)
     if rc != 0:
         print('   [X] 推送 CA 失败：%s' % out.strip())
         return False
     sh('chmod 644 %s/*; chown root:root %s/*' % (TMP_DIR, TMP_DIR))
-    sh('umount %s 2>/dev/null; mount --bind %s %s' % (CACERT_DIR, TMP_DIR, CACERT_DIR))
-    mounted = sh('mount | grep -c cacerts')
+    sh('chcon -R u:object_r:system_security_cacerts_file:s0 %s 2>/dev/null' % TMP_DIR)
+    ca_md5 = hashlib.md5(open(CA_PEM, 'rb').read()).hexdigest()
+    res = cert_install.mount(sh, TMP_DIR, CA_NAME, ca_md5)
+    if not res.get('ok'):
+        print('   [X] 证书没能装进游戏可见的命名空间：%s' % res.get('detail'))
+        print('       Android 10+ 每个应用有独立 mount namespace；只在 adb shell 里挂载，')
+        print('       游戏进程看不到（会报 CERTIFICATE_UNKNOWN）。请确认模拟器已 root、')
+        print('       系统里有 zygote/zygote64 且 nsenter 可用后重试。')
+        return False
+    print('   CA 挂载=是（%s，系统证书 %d 张）' % (
+        res.get('mode') or '命名空间', res.get('cert_count') or (n + 1)))
     for ip in ips:
         sh('iptables -t nat -D OUTPUT -p tcp -d %s --dport 443 -j DNAT --to-destination %s 2>/dev/null'
            % (ip, HOST_PROXY))
         sh('iptables -t nat -A OUTPUT -p tcp -d %s --dport 443 -j DNAT --to-destination %s'
            % (ip, HOST_PROXY))
     ON[0] = True
-    print('   CA 挂载=%s，DNAT IP=%s' % ('是' if mounted.strip() not in ('0', '') else '否', ', '.join(ips)))
+    print('   DNAT IP=%s' % ', '.join(ips))
     # 顺手验一下「模拟器 -> 宿主 8443」这一跳：换电脑最常见的坑就是这里被防火墙掐断，
     # 而且表现极其迷惑——游戏照常能玩，代理却一条连接都收不到。
     if diag:
@@ -312,15 +489,34 @@ def mitm_on(ips):
 
 
 def mitm_off(ips):
-    if not ON[0]:
-        return
-    for ip in ips:
-        sh('iptables -t nat -D OUTPUT -p tcp -d %s --dport 443 -j DNAT --to-destination %s 2>/dev/null'
-           % (ip, HOST_PROXY))
-    sh('umount %s 2>/dev/null' % CACERT_DIR)
-    sh('rm -rf %s' % TMP_DIR)
+    """还原抓包环境。无条件执行、幂等——即使异常退出 ON 没置位也要清残留。
+
+    米服卡启动页的根因就在这：旧版只删按 IP 的规则、不删全量兜底，且依赖
+    diag.ALL_ON（子进程加规则、父进程标志仍是 False），结果「提示已还原」其实
+    网络还被劫持、根证书目录还被替换 → 小米 FlySDK 校验证书链失败卡死。
+    """
+    res = None
+    if diag:
+        try:
+            res = diag.cleanup_all(sh, HOST_PROXY, CACERT_DIR, TMP_DIR)
+        except Exception as e:
+            print('   [!] 自动清理异常：%s' % e)
+    if res is None:
+        # 兜底：diag 不可用时至少删掉按 IP 的规则 + 全量兜底
+        for ip in ips:
+            sh('iptables -t nat -D OUTPUT -p tcp -d %s --dport 443 -j DNAT '
+               '--to-destination %s 2>/dev/null' % (ip, HOST_PROXY))
+        sh('iptables -t nat -D OUTPUT -p tcp --dport 443 -j DNAT '
+           '--to-destination %s 2>/dev/null' % HOST_PROXY)
+        sh('umount %s 2>/dev/null' % CACERT_DIR)
+        sh('rm -rf %s' % TMP_DIR)
     ON[0] = False
-    print('   已还原环境（iptables / 证书）')
+    if res and not res.get('cleaned'):
+        print('   [X] 抓包环境未完全还原：残留劫持规则=%s 条，证书挂载=%s' % (
+            res.get('rules_after'), '仍在' if res.get('mounted_after') else '已卸'))
+        print('       游戏可能因此卡启动页。请在网页点「恢复联网」，或手动重启模拟器。')
+    else:
+        print('   已还原环境（iptables / 证书，已校验无残留）')
 
 
 # ---------------- 博物馆（账号真实点亮的藏品）----------------
@@ -358,6 +554,77 @@ def _sessions_since(since):
         return []
 
 
+def _tap_game(x, y, pkg=None):
+    """在【游戏所在显示】上点一次（坐标是 900x1600 基准，内部按分辨率缩放）。
+
+    MuMu KeepAlive 下默认屏点不到游戏；非 900x1600 的模拟器上不缩放会点偏。
+    """
+    px, py = int(x), int(y)
+    if boot:
+        try:
+            px, py = boot.to_phys(x, y)
+        except Exception:
+            pass
+    if disp:
+        disp.setup(ADB[0], SER[0], pkg)
+        if disp.tap_base(px, py):
+            return True
+    rc, _ = adb('shell', 'input tap %d %d' % (px, py))
+    return rc == 0
+
+
+def auth_stuck_hint(log_path):
+    """判断「卡在渠道账号认证」并返回人话提示（OPPO 实测）。
+
+    判据：代理日志里 heytap/oppomobile/nearme 这些渠道账号域名连了很多次，
+    而登录服 account.flysdk.cn 关连接时 c2s 一直是 0 字节 —— 说明游戏连上了
+    账号 SDK，但认证请求根本没发出去，游戏会一直停在登录/加载页。
+    这不是证书问题（证书有问题会 CERTIFICATE_UNKNOWN），也不该继续等超时。
+    """
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+            text = f.read()
+    except Exception:
+        return ''
+    if not text:
+        return ''
+    heytap = len(re.findall(r'\[MITM\] [\w.\-]*(?:heytap|oppomobile|nearme)[\w.\-]*', text))
+    zero = 0
+    for m in re.finditer(r'account\.flysdk\.cn 连接关闭，c2s=(\d+)B', text):
+        if int(m.group(1)) == 0:
+            zero += 1
+    if heytap >= 20 and zero >= 1:
+        return ('代理日志里 OPPO 账号域名（heytap / oppomobile）连了 %d 次，而登录服 '
+                'account.flysdk.cn 一直是 0 字节 —— 游戏卡在 OPPO 账号认证，不是证书问题。'
+                '请点「一键恢复联网」，在模拟器里手动登录并进到庭院，再开始抓取。' % heytap)
+    return ''
+
+
+def _game_ca_visible(pkg):
+    """游戏进程里能否读到本包 CA（经 /proc/<pid>/root 验证命名空间继承）。
+
+    返回 True/False；进程还没起来返回 None。只用于日志预警：
+    Android 10+ 若只在 shell 里挂证书，这里会是 False，随后必然 CERTIFICATE_UNKNOWN。
+    """
+    if cert_install is None:
+        return None
+    pids = [x for x in sh('pidof %s' % pkg).split() if x.isdigit()]
+    if not pids:
+        return None
+    try:
+        md5 = hashlib.md5(open(CA_PEM, 'rb').read()).hexdigest()
+    except Exception:
+        md5 = ''
+    dirs = cert_install.ca_dirs(sh)
+    for pid in pids:
+        for d in dirs:
+            got = cert_install.file_md5(
+                sh, None, '/proc/%s/root%s/%s' % (pid, d, CA_NAME))
+            if got and (not md5 or got == md5):
+                return True
+    return False
+
+
 def restart_game(pkg, clear=False, tap=(450, 1170), timeout=150, stall=0):
     """强制重启游戏、自动点「进入游戏」，同时等抓包数据稳定。返回本次会话目录列表。
 
@@ -366,6 +633,12 @@ def restart_game(pkg, clear=False, tap=(450, 1170), timeout=150, stall=0):
     """
     if pkg.lower().endswith('.huawei'):
         return restart_game_huawei(pkg, timeout=timeout)
+
+    # b 站服：清登录态会让它弹出 B 站扫码页，脚本过不了这关 → 卡启动页、0 协议。
+    # 而且 b 站服的登录态就在 ejoysdk.xml 里，留着它反而能直接进游戏。强制忽略 clear。
+    if pkg == 'com.ali.croak.bilibili' and clear:
+        print('   [b站服] 已忽略「清登录态」：清了会弹 B 站扫码页，脚本进不去游戏。')
+        clear = False
 
     if clear:
         print('   清登录态（可能需要重新扫码）...')
@@ -385,10 +658,16 @@ def restart_game(pkg, clear=False, tap=(450, 1170), timeout=150, stall=0):
             sh('chmod 660 ' + sp)
         else:
             print('   [!] 读不到 ejoysdk.xml，跳过清登录态')
+    if disp:
+        disp.setup(ADB[0], SER[0], pkg)
+        print('   显示检测：%s' % disp.info())
     sh('am force-stop %s' % pkg)
     time.sleep(1)
     sh('logcat -c')
     sh('monkey -p %s -c android.intent.category.LAUNCHER 1' % pkg)
+
+    if boot:
+        boot.setup(ADB[0], SER[0], pkg)
 
     t0 = time.time()
     last_tap = 0.0
@@ -397,10 +676,33 @@ def restart_game(pkg, clear=False, tap=(450, 1170), timeout=150, stall=0):
     cur = None
     while time.time() - t0 < timeout:
         el = time.time() - t0
-        if el > 10 and time.time() - last_tap > 8:
-            sh('input tap %d %d' % tap)
+        if el > 8 and time.time() - last_tap > 7:
+            if boot:
+                # 先认页面：渠道账号授权页 → 立刻停（代点没用，白等 150 秒最坑）；
+                # 有可点文本（同意/允许/进入游戏）→ 点文本；都没有 → 勾协议 + 轮坐标。
+                st = boot.pass_once(pkg, lambda a, b: _tap_game(a, b, pkg),
+                                    int(el) // 7,
+                                    virtual=bool(disp and disp.LOGICAL[0] > 0),
+                                    prefer=tuple(tap))
+                if st == 'login':
+                    print('   [X] ' + boot.describe_login(pkg))
+                    print('       → 本渠道要先人工登录一次；进到游戏主界面后重新点开始抓取。')
+                    break
+                if st == 'ingame':
+                    print('   [%.0fs] 画面已在游戏主界面' % el)
+                elif st == 'tapped':
+                    print('   [%.0fs] 已点掉启动页弹窗' % el)
+                elif st == 'agree':
+                    print('   [%.0fs] 勾协议 → 点「进入游戏」' % el)
+                else:
+                    print('   [%.0fs] 点「进入游戏」' % el)
+            else:
+                # 没装 game_boot（旧目录只覆盖了部分文件）时退回老的盲点逻辑
+                tap_candidates = [tuple(tap), (450, 960), (450, 1143)]
+                pick = tap_candidates[(int(el) // 8) % len(tap_candidates)]
+                _tap_game(pick[0], pick[1], pkg)
+                print('   [%.0fs] 点「进入游戏」(%d,%d)' % (el, pick[0], pick[1]))
             last_tap = time.time()
-            print('   [%.0fs] 点「进入游戏」(%d,%d)' % (el, tap[0], tap[1]))
         sessions = [d for d in glob.glob(os.path.join(CAP, '*'))
                     if os.path.isdir(d) and os.path.getmtime(d) >= t0 - 3]
         size, big = 0, None
@@ -449,8 +751,54 @@ def _drain_capture(t0, max_wait=90):
             if os.path.isdir(d) and os.path.getmtime(d) >= t0 - 3]
 
 
+def _check_abi(pkg):
+    """所有渠道服通用 ABI 体检：x86 加固库在模拟器必崩，自动修成 armeabi-v7a。
+
+    v1.7 只对华为做了 ABI 修复，但阿里聚安全的 x86 .so 是所有渠道服共用的，
+    官服/米服/OPPO/b站装成 x86 一样会 SIGSEGV 闪退。这里统一检查。
+    返回 True=可继续 / False=必须阻断。
+    """
+    try:
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import huawei_channel as hw
+        hw.ADB[0] = ADB[0]
+        hw.SER[0] = SER[0]
+        abi = hw.primary_abi(pkg)
+    except Exception as e:
+        print('   [!] ABI 体检失败（不阻断）：%s' % e)
+        return True
+    if not abi or 'arm' in abi.lower():
+        return True
+    print('   [!] %s 当前 ABI=%s：阿里加固的 x86 库在模拟器会 SIGSEGV，自动修复中…' % (
+        PKG_LABEL.get(pkg, pkg), abi))
+    try:
+        # 临时把 hw 的目标包指向当前 pkg，复用 ensure_abi 的自动重装逻辑
+        old = hw.HW_PKG
+        hw.HW_PKG = pkg
+        try:
+            r = hw.ensure_abi()
+        finally:
+            hw.HW_PKG = old
+    except Exception as e:
+        r = {'ok': False, 'error': str(e)}
+    if r.get('ok') and r.get('changed'):
+        print('   [OK] ABI 已改为 %s（%s），游戏数据已保留。' % (
+            r.get('abi'), r.get('source', '自动提取')))
+        return True
+    print('   [X] ABI 自动修复失败：%s' % r.get('error', '未知错误'))
+    print('       这是必崩项。可手动把游戏以 armeabi-v7a 重装，'
+          '或在华为卡片「游戏 APK 路径」填本机 APK 后重试。')
+    return False
+
+
 def _hw_precheck(pkg):
-    """华为渠道服抓取前置体检：HMS Core / 登录状态 / CPU ABI。只提示，不阻断。"""
+    """华为渠道服抓取前置体检：HMS Core / 登录状态 / CPU ABI。
+
+    ABI=x86 会必崩（阿里聚安全 x86 加固库 SIGSEGV），这里直接自动修复：
+    ensure_abi() 从模拟器 pm path 抠出已装 APK，以 armeabi-v7a 覆盖重装。
+    修不成就阻断抓取——继续跑只会让游戏反复闪退、白等超时。
+    """
     try:
         if HERE not in sys.path:
             sys.path.insert(0, HERE)
@@ -460,18 +808,19 @@ def _hw_precheck(pkg):
         st = hw.status()
     except Exception as e:
         print('   [!] 华为渠道服体检失败：%s' % e)
-        return
+        return True   # 体检都失败就别在这拦，交给后面流程自己报错
     if not st.get('hms_installed'):
         print('   [!] 未安装 HMS Core，华为渠道服会卡在「安装 HMS」死循环。')
         print('       解决：把 hmscore.apk 放到 tools/apk/，或点界面上的「准备华为渠道服」。')
     if not st.get('account'):
         print('   [!] 当前没有已登录的华为账号，稍后需要你在模拟器里手动输入账号密码。')
     abi = st.get('abi') or ''
-    if abi and 'arm' not in abi.lower():
-        print('   [!] 当前 ABI=%s：阿里加固的 x86 库在模拟器上会 SIGSEGV，建议改 armeabi-v7a 重装。' % abi)
+    # ABI 由 _check_abi() 对所有服统一处理（含自动修复），这里只做展示，
+    # 不再重复重装，避免同一台机器修两次。
     if st.get('account'):
         print('   华为账号：%s（HMS=%s，ABI=%s）' % (
             st['account'], '有' if st.get('hms_installed') else '无', abi or '未知'))
+    return True
 
 
 def restart_game_huawei(pkg, timeout=150):
@@ -507,8 +856,12 @@ def restart_game_huawei(pkg, timeout=150):
             print('   [!] 缺 HMS Core：把 hmscore.apk 放到 tools/apk/ 后重试，或点「准备环境」按钮。')
         elif state == 'register_closed':
             print('   [!] 该华为账号在本渠道没有历史角色，且服务器已停止新用户注册，换号才能进。')
-        elif state == 'stuck':
-            print('   [!] 游戏停在非预期页面，已截图到 output/ 便于排查。')
+        elif state == 'stuck' or state == 'timeout':
+            print('   [!] 游戏停在非预期页面（常见于首次启动强制更新约 46MB，'
+                  '或正在读取中）。')
+            print('       请先保持模拟器联网，让游戏把更新下载完、能正常进到庭院，')
+            print('       再点一次「开始抓取」；更新没跑完时自动过页逻辑进不去。')
+            print('       已截图到 output/ 便于排查。')
         return []
 
     return _drain_capture(t0, max_wait=min(120, max(30, timeout // 2)))
@@ -649,7 +1002,7 @@ def parse_sessions(sessions, proto_dir):
 def main():
     ap = argparse.ArgumentParser(description='一键抓官服/米服存档')
     ap.add_argument('--port', help='模拟器 adb 端口')
-    ap.add_argument('--pkg', help='包名，或 官服/米服/华为（默认自动识别）')
+    ap.add_argument('--pkg', help='包名，或 官服/米服/华为/b站（默认自动识别）')
     ap.add_argument('--clear', action='store_true', help='清登录态强制全量（可能要重新登录）')
     ap.add_argument('--no-album', action='store_true', help='不补抓相册图层')
     ap.add_argument('--no-museum', action='store_true', help='不自动进博物馆抓真实藏品（默认会抓）')
@@ -701,7 +1054,7 @@ def main():
     else:
         packages = installed_pkgs()
     if not packages or not packages[0]:
-        print('[X] 没找到官服/米服包名。确认游戏已安装，或用 --pkg 指定。')
+        print('[X] 没找到官服/米服/华为/b站包名。确认游戏已安装，或用 --pkg 指定。')
         return 1
     packages = [p for p in packages if p]
 
@@ -738,8 +1091,15 @@ def main():
 
     pkg = packages[0]
     print('包名: %s（%s）' % (pkg, PKG_LABEL.get(pkg, '未知渠道')))
+    # 所有渠道服统一 ABI 体检：x86 加固库必崩，自动修（v1.7 只查华为，这里补全）
+    if not _check_abi(pkg):
+        return 1
     if pkg.lower().endswith('.huawei'):
-        _hw_precheck(pkg)
+        if not _hw_precheck(pkg):
+            return 1
+    if pkg == 'com.ali.croak.bilibili':
+        print('   [b站服] 请先确认模拟器里能手动进到庭院主界面；'
+              '抓包时证书会覆盖 flysdk/aligames 域名，别再勾「清登录态」。')
 
     ips = resolve_ips()
     print('登录服务器: %s -> %s' % (LOGIN_HOST, ', '.join(ips)))
@@ -751,8 +1111,34 @@ def main():
     got = False        # 博物馆协议是否真的抓到（--no-museum 时保持 False）
 
     try:
+        # 抓取前无条件清理残留环境：上次异常退出 / 别的版本留下的劫持规则和证书
+        # 挂载会让游戏这次进不去（米服 FlySDK 证书链校验失败卡启动页就是这么来的）。
+        # 清完再抓，保证每次都从干净状态开始——覆盖所有渠道服，不只米服。
+        if diag:
+            try:
+                pre = diag.cleanup_all(sh, HOST_PROXY, CACERT_DIR, TMP_DIR)
+                if pre.get('rules_before') or pre.get('mounted_after'):
+                    print('   抓取前环境清理：残留规则 %d 条已清；证书挂载=%s' % (
+                        pre.get('rules_before'), '仍在（异常）' if pre.get('mounted_after') else '已卸'))
+            except Exception as _e:
+                print('   [!] 抓取前环境清理异常（继续尝试）：%s' % _e)
+
+        cert_ok, cert_msg = verify_cert_pair()
+        print('   证书自检：%s' % cert_msg)
+        if not cert_ok:
+            print('[X] 证书不配套，中止抓取（继续只会抓空）。'
+                  '请完整重装抓取器：解压时 ca.pem / srv.pem / srv.key 全部选覆盖。')
+            return 1
+
         print('\n[1/5] 启动代理...')
+        old = free_proxy_port()
+        if old:
+            print('   已清理上次任务残留的代理进程：%s' % ', '.join(map(str, old)))
         proxy_cmd = [sys.executable, PROXY, '--listen', '8443', '--host', LOGIN_HOST]
+        # b 站服登录域名未知：让它解密所有 SNI，配合全量 443 劫持才能抓到登录协议。
+        if pkg in HOST_ALL_PKGS:
+            proxy_cmd.append('--host-all')
+            print('   [%s] 启用全域名解密（host-all）' % PKG_LABEL.get(pkg, pkg))
         if not a.no_album:
             proxy_cmd.append('--inject-album')
         plog = open(os.path.join(out_dir, '代理日志.txt'), 'w', encoding='utf-8')
@@ -763,6 +1149,10 @@ def main():
             with open(os.path.join(out_dir, '代理日志.txt'), 'r', encoding='utf-8', errors='replace') as f:
                 tail = f.read()[-300:]
             print('[X] 代理启动失败（端口 8443 被占用？）：%s' % tail)
+            if proxy_port_busy():
+                print('    端口 8443 被别的进程占着——多半是上次任务残留的代理。')
+                print('    处理：关掉抓取器再重开；仍不行就在任务管理器里结束残留的 python.exe，')
+                print('    然后在网页点「一键恢复联网」清掉劫持规则。')
             return 1
         print('   代理已启动，补抓相册=%s' % ('关' if a.no_album else '开'))
 
@@ -771,15 +1161,29 @@ def main():
             return 1
 
         print('\n[3/5] 重启游戏触发登录（会自动点「进入游戏」）...')
+        # 渠道服启动页要先勾协议、过联运声明弹窗，40 秒经常还没点到「进入游戏」；
+        # 官服/米服沿用 40 秒快速失败，其余渠道服给 70 秒。
+        _stall = 40 if pkg in ('com.aligames.lxqw.hhb', 'com.ali.croak.mi') else 70
         sessions = restart_game(pkg, clear=a.clear, tap=tuple(a.tap),
-                                timeout=a.timeout, stall=40)
+                                timeout=a.timeout, stall=_stall)
         print('   本次会话 %d 个' % len(sessions))
+        _ca = _game_ca_visible(pkg)
+        if _ca is False:
+            print('   [!] 警告：游戏进程里看不到抓包 CA —— 它没有继承 zygote 的证书挂载。')
+            print('       这会导致 TLS 握手报 CERTIFICATE_UNKNOWN、0 个协议。')
+            print('       请确认模拟器已 root，且系统里有 zygote/zygote64（nsenter 可用）。')
 
         # 一字节都没抓到 = 流量没进代理（不是解析问题）。自检整条链，能补的 IP 补上再试一轮。
         if diag and sum(size_of_s2c(d) for d in sessions) == 0:
-            _uid = diag.pkg_uid(sh, pkg)
+            _hint = auth_stuck_hint(os.path.join(out_dir, '代理日志.txt'))
+            if _hint:
+                print('   [!] ' + _hint)
+            # 注意：report() 只收 4 个参数（sh, ips, host_port, proxy_log）。
+            # 旧代码这里多传了 diag.pkg_uid(...) 的返回值，但 grab_diag 里
+            # 根本没有 pkg_uid 函数 —— 这是残留的幽灵调用，一走到自检就崩。
+            # 直接按正确签名调用，避免 b 服/其它渠道服抓空时整轮失败。
             _ok, _real = diag.report(sh, ips, HOST_PROXY,
-                                     os.path.join(out_dir, '代理日志.txt'), _uid)
+                                     os.path.join(out_dir, '代理日志.txt'))
             _added = [ip for ip in _real if ip not in ips]
             for ip in _added:
                 _good, _err = diag.add_rule(sh, ip, HOST_PROXY)
@@ -861,12 +1265,21 @@ def main():
         names = sorted(os.path.basename(f)[:-5] for f in glob.glob(os.path.join(proto_dir, '*.json')))
         print('   解析出 %d 个协议文件，共 %d 个 cmd' % (n, len(names)))
         if n == 0:
-            print('   [X] 一个协议都没解析出来 —— 模拟器的流量根本没进代理，不是解析问题。')
+            print('   [X] 一个协议都没解析出来 —— 模拟器的流量没进代理 / 没解密成功。')
             if diag:
                 for ln in diag.tail(os.path.join(out_dir, '代理日志.txt'), 8):
                     print('       代理日志| %s' % ln)
-            print('       判断方法：日志只有「代理已启动」= 流量没进来（防火墙拦了 8443 / '
-                  '登录服 IP 不在劫持名单）；有「连接来自」没有「TLS 建立」= 证书没生效。')
+            print('       判断方法：')
+            print('       · 只有「代理已启动」没有「连接来自」= 流量没进来（防火墙拦了 8443）')
+            print('       · 有「连接来自」但一条「TLS 建立」都没有 = 客户端不信任证书。'
+                  '先确认「CA 挂载=是（zygote 命名空间…）」；若显示 shell 命名空间或失败，'
+                  '说明 Android 10+ 的每应用 mount namespace 没覆盖到，游戏看不到 CA。'
+                  '再确认启动时「证书自检」那行是配套。')
+            print('       · 有「TLS 建立」但 0 协议 = 解密成功但登录流程没走到，'
+                  '需先手动登录进主界面再抓。')
+            _hint = auth_stuck_hint(os.path.join(out_dir, '代理日志.txt'))
+            if _hint:
+                print('       · ' + _hint)
         key = ['client.load_role', 'item.load_items', 'album.load_all',
                'travel.load_note', 'furniture.load_furniture']
         miss = [k for k in key if k not in names]
@@ -955,15 +1368,45 @@ def main():
                 PROC[0].wait(timeout=5)
             except Exception:
                 pass
-        if ON[0]:
-            mitm_off(ips if 'ips' in dir() else KNOWN_IPS)
-        if diag:
-            # 自检阶段补的 IP / 全量兜底规则，这里一并撤掉，避免退出后模拟器断网
-            try:
-                diag.cleanup(sh, HOST_PROXY, extra_ips if 'extra_ips' in dir() else ())
-            except Exception:
-                pass
+        # 无条件清理：异常退出时 ON[0] 可能还没置位，但规则可能已经加了一部分。
+        # 米服卡启动页就是因为这里「ON 为假就跳过清理」留下了劫持规则。
+        mitm_off(ips if 'ips' in dir() else KNOWN_IPS)
+
+
+def _fatal(exc):
+    """把异常原因写到日志 + 用 ASCII 安全方式打印，避免老系统 GBK 控制台把中文堆栈打印成空白。"""
+    import traceback as _tb
+    # 日志文件用 UTF-8 落盘，用户发我这个文件就能看到完整堆栈
+    log_path = os.path.join(ROOT, 'grab_error.log')
+    try:
+        with open(log_path, 'w', encoding='utf-8') as _f:
+            _f.write('TravelFrog Grabber fatal error\n')
+            _f.write('Python %s\n' % sys.version)
+            _f.write(_tb.format_exc())
+    except Exception:
+        pass
+    # 控制台只打 ASCII 安全的摘要，避免 GBK 控制台打印中文抛异常导致堆栈完全看不见
+    print('')
+    print('=== FATAL ERROR (see grab_error.log for full traceback) ===')
+    print('Python: %s' % sys.version.replace('\n', ' '))
+    try:
+        _msg = (str(exc) or exc.__class__.__name__).encode('ascii', 'backslashreplace').decode('ascii')
+        print('%s: %s' % (exc.__class__.__name__, _msg[:500]))
+    except Exception:
+        print('exception type: %s' % type(exc).__name__)
+    print('Log: %s' % log_path)
+    print('==========================================================')
+    sys.stdout.flush()
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except BaseException as _exc:
+        try:
+            _fatal(_exc)
+        except Exception:
+            pass
+        raise SystemExit(1)

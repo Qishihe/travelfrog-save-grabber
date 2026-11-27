@@ -349,6 +349,8 @@ def pump(src, dst, logf, tag, stop, wlock=None):
 def handle_mitm(raw, sni, d, inject_album=False):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(SRV_PEM, SRV_KEY)
+    # 握手阶段保留超时，避免半开连接一直占线程
+    raw.settimeout(20)
     tls = ctx.wrap_socket(raw, server_side=True)
     print('   [MITM] %s TLS 建立' % sni, flush=True)
 
@@ -365,6 +367,10 @@ def handle_mitm(raw, sni, d, inject_album=False):
     up.sendall(req2)
     resp = read_until(up, b'\r\n\r\n')
     tls.sendall(resp)
+    # 握手完成后必须解除超时：游戏的长连接/心跳空闲几十秒很常见，
+    # 留着 15 秒超时会被代理主动掐断，表现就是一直卡在「正在读取中」。
+    up.settimeout(None)
+    tls.settimeout(None)
 
     with open(os.path.join(d, 'handshake.txt'), 'wb') as f:
         f.write(b'=== CLIENT REQUEST ===\n' + req2 + b'\n=== SERVER RESPONSE ===\n' + resp)
@@ -387,6 +393,13 @@ def handle_mitm(raw, sni, d, inject_album=False):
 
 def handle_passthrough(raw, sni):
     up = socket.create_connection((sni, 443), timeout=15)
+    # 连接建立后解除超时：透传的是长连接（账号 SDK 心跳、推送），
+    # 15 秒空闲超时会把它们掐断，游戏就卡在登录/读取中。
+    up.settimeout(None)
+    try:
+        raw.settimeout(None)
+    except Exception:
+        pass
     stop = threading.Event()
 
     class Null:
@@ -400,19 +413,72 @@ def handle_passthrough(raw, sni):
     pump(raw, up, Null(), 'p_down', stop)
 
 
-def client_thread(raw, sni_filter, inject_album=False):
+# 渠道账号 / 系统服务域名：一律原样透传，绝不做 TLS 解密。
+#
+# 为什么：OPPO 渠道服用 --host-all 时，账号 SDK（欢太 / heytap / oppomobile）
+# 的连接也会被终止 TLS。实测表现是 SDK 认证请求发不出去、连上就 read timeout，
+# 游戏永远卡在登录页——玩家反馈「开着抓取器进不去游戏，不开就能进」。
+# 这些域名跟存档协议无关，透传不影响抓取，但能让游戏正常认证进主界面。
+PASSTHROUGH_SUFFIXES = (
+    # OPPO / 欢太 / 一加
+    'heytap.com', 'heytapmobi.com', 'oppomobile.com', 'oppo.com', 'coloros.com',
+    'allawno.com', 'allawntech.com', 'nearme.com.cn', 'gcsdk.com',
+    # vivo
+    'vivo.com.cn', 'vivo.com', 'vivoglobal.com',
+    # 小米
+    'xiaomi.com', 'mi.com', 'miui.com', 'mi-img.com',
+    # 华为 / 荣耀
+    'huawei.com', 'hicloud.com', 'dbankcloud.com', 'dbankcdn.com', 'honor.com',
+)
+
+
+def should_passthrough(sni):
+    """账号/系统域名 → 纯透传，不解密。"""
+    s = (sni or '').lower().rstrip('.')
+    if not s:
+        return False
+    for suf in PASSTHROUGH_SUFFIXES:
+        if s == suf or s.endswith('.' + suf):
+            return True
+    return False
+
+
+def client_thread(raw, sni_filter, inject_album=False, host_all=False):
     try:
-        raw.settimeout(10)
-        peek = raw.recv(4096, socket.MSG_PEEK)
+        raw.settimeout(6)
+        try:
+            peek = raw.recv(4096, socket.MSG_PEEK)
+        except socket.timeout:
+            # 连上却不发 ClientHello 的空闲/预连接（HTTP2 预热、健康检查）。
+            # 直接关掉即可，不要打成「连接处理异常」，否则日志里一堆假故障。
+            raw.close()
+            return
         sni = parse_sni(peek)
         if not sni:
             raw.close()
             return
-        if sni in sni_filter:
+        # peek 用的 10 秒超时只用于取 SNI；之后交给长连接转发，必须解除，
+        # 否则空闲连接被断开，游戏初始化会一直重试。
+        raw.settimeout(None)
+        # 渠道账号/系统服务域名永远透传：解密它们会让 SDK 认证卡死，
+        # 游戏直接进不去（玩家表现为「开了抓取器就进不去游戏」）。
+        if should_passthrough(sni):
+            print('   [透传] %s（账号/系统域名，不解密）' % sni, flush=True)
+            handle_passthrough(raw, sni)
+            return
+        # host_all：解密其余所有 SNI（b 站服等渠道服登录域名未知时的兜底）。
+        # 会话按 SNI 分目录落盘，解析脚本只认协议 cmd，无关流量会被自动忽略。
+        if host_all or sni in sni_filter:
             d = next_dir(sni)
             handle_mitm(raw, sni, d, inject_album)
         else:
             handle_passthrough(raw, sni)
+    except socket.timeout:
+        # 握手阶段对端不发数据/不回包：客户端自己会重连，不算故障，别刷日志
+        try:
+            raw.close()
+        except Exception:
+            pass
     except Exception as e:
         print('   连接处理异常: %s' % e, flush=True)
         try:
@@ -425,6 +491,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--listen', type=int, default=8443)
     ap.add_argument('--host', action='append', default=None)
+    ap.add_argument('--host-all', action='store_true',
+                    help='解密所有 SNI（b 站服等登录域名未知的渠道服兜底）')
     ap.add_argument('--inject-album', action='store_true',
                     help='嗅到 album.load_all 后自动补发 album.load_by_id_list，把相册图层抓全')
     a = ap.parse_args()
@@ -436,11 +504,13 @@ def main():
     srv.bind(('0.0.0.0', a.listen))
     srv.listen(64)
     print('代理已启动 0.0.0.0:%d  解密域名=%s  注入相册=%s'
-          % (a.listen, sorted(hosts), '开' if a.inject_album else '关'), flush=True)
+          % (a.listen, '全部(HOST-ALL)' if a.host_all else sorted(hosts),
+             '开' if a.inject_album else '关'), flush=True)
     while True:
         raw, addr = srv.accept()
         print('连接来自 %s' % (addr,), flush=True)
-        threading.Thread(target=client_thread, args=(raw, hosts, a.inject_album), daemon=True).start()
+        threading.Thread(target=client_thread,
+                         args=(raw, hosts, a.inject_album, a.host_all), daemon=True).start()
 
 
 if __name__ == '__main__':

@@ -26,6 +26,8 @@ WEB_DIR = os.path.join(ROOT, 'web')
 SCRIPTS = os.path.join(ROOT, 'scripts')
 GRAB = os.path.join(SCRIPTS, 'grab_official.py')
 HW = os.path.join(SCRIPTS, 'huawei_channel.py')
+OPPO = os.path.join(SCRIPTS, 'oppo_channel.py')
+NET_RESTORE = os.path.join(SCRIPTS, 'net_restore.py')
 OUTPUT = os.path.join(ROOT, 'output')
 ADB = os.path.join(ROOT, 'tools', 'platform-tools', 'adb.exe')
 CA_PEM = os.path.join(ROOT, 'tools', 'mitm', 'ca.pem')
@@ -180,7 +182,7 @@ def status_info():
         'output': OUTPUT,
         'runtime': sys.executable,
         'running': bool(cur and cur.state == 'running'),
-        'version': '1.2',
+        'version': '2.5',
     }
 
 
@@ -477,7 +479,100 @@ def huawei_prepare(b):
     apk = str(b.get('apk') or '').strip()
     if apk:
         extra += ['--apk', apk]
+    # 游戏 APK 可选：不传时 ensure_abi 会自动从模拟器 pm path 提取已装包，
+    # 玩家不必手输路径也能一键修好 x86 加固库闪退。
+    game = str(b.get('gameApk') or '').strip()
+    if game:
+        extra += ['--game-apk', game]
     return _hw_call('prepare', port=b.get('port'), extra=extra, timeout=600)
+
+
+def _net_call(cmd, port=None, extra=None, timeout=180):
+    """调用 scripts/net_restore.py，返回它的 JSON 输出。"""
+    if not os.path.isfile(NET_RESTORE):
+        return {'ok': False, 'error': 'scripts/net_restore.py 缺失，程序目录不完整。'}
+    cmdline = [sys.executable, '-u', NET_RESTORE, cmd]
+    if port:
+        cmdline += ['--port', str(port)]
+    if extra:
+        cmdline += [str(x) for x in extra]
+    env = dict(os.environ)
+    env['PYTHONIOENCODING'] = 'utf-8'
+    env['PYTHONUNBUFFERED'] = '1'
+    try:
+        p = subprocess.run(cmdline, capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=timeout, cwd=ROOT, env=env,
+                           creationflags=CREATE_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return {'ok': False, 'error': '操作超时（%ss），模拟器可能无响应' % timeout}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+    out = (p.stdout or '').strip()
+    i = out.find('{')
+    if i >= 0:
+        try:
+            return json.loads(out[i:])
+        except Exception:
+            pass
+    return {'ok': False, 'error': ((out + (p.stderr or '')) or '无输出')[-400:]}
+
+
+def net_status(port=None):
+    return _net_call('status', port=port, timeout=90)
+
+
+def net_restore(b):
+    """一键恢复联网：清抓包残留。可选重启模拟器兜底。"""
+    if JOB['cur'] and JOB['cur'].state == 'running':
+        return {'ok': False, 'error': '正在抓取中，请先停止任务再恢复联网。'}
+    extra = ['--reboot'] if b.get('reboot') else []
+    return _net_call('restore', port=b.get('port'), extra=extra,
+                     timeout=180 if b.get('reboot') else 120)
+
+
+def _oppo_call(cmd, port=None, extra=None, timeout=180):
+    """调用 scripts/oppo_channel.py，返回它的 JSON 输出。"""
+    if not os.path.isfile(OPPO):
+        return {'ok': False, 'error': 'scripts/oppo_channel.py 缺失，程序目录不完整。'}
+    cmdline = [sys.executable, '-u', OPPO, cmd]
+    if port:
+        cmdline += ['--port', str(port)]
+    if extra:
+        cmdline += [str(x) for x in extra]
+    env = dict(os.environ)
+    env['PYTHONIOENCODING'] = 'utf-8'
+    env['PYTHONUNBUFFERED'] = '1'
+    try:
+        p = subprocess.run(cmdline, capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=timeout, cwd=ROOT, env=env,
+                           creationflags=CREATE_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return {'ok': False, 'error': '操作超时（%ss），模拟器可能无响应' % timeout}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+    out = (p.stdout or '').strip()
+    i = out.find('{')
+    if i >= 0:
+        try:
+            return json.loads(out[i:])
+        except Exception:
+            pass
+    return {'ok': False, 'error': ((out + (p.stderr or '')) or '无输出')[-400:]}
+
+
+def oppo_status(port=None):
+    return _oppo_call('status', port=port, timeout=90)
+
+
+def oppo_logout(b):
+    """一键退出 OPPO 账号。破坏性操作，必须显式 confirm 才动手。"""
+    if not b.get('confirm'):
+        return {'ok': False, 'needConfirm': True,
+                'error': '退出 OPPO 账号需要二次确认（会清除游戏数据并要求重新登录）'}
+    if JOB['cur'] and JOB['cur'].state == 'running':
+        return {'ok': False, 'error': '正在抓取中，请先停止任务再退出账号。'}
+    extra = ['--reboot'] if b.get('reboot') else []
+    return _oppo_call('logout', port=b.get('port'), extra=extra, timeout=180)
 
 
 def open_path(p):
@@ -503,7 +598,7 @@ def open_path(p):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'TravelFrogGrabber/1.2'
+    server_version = 'TravelFrogGrabber/2.5'
 
     def log_message(self, *a):
         pass
@@ -566,6 +661,14 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(u.query)
             port = (qs.get('port') or [''])[0].strip() or None
             return self._json(huawei_status(port))
+        if p == '/api/oppo/status':
+            qs = parse_qs(u.query)
+            port = (qs.get('port') or [''])[0].strip() or None
+            return self._json(oppo_status(port))
+        if p == '/api/net/status':
+            qs = parse_qs(u.query)
+            port = (qs.get('port') or [''])[0].strip() or None
+            return self._json(net_status(port))
         if p == '/api/job':
             qs = parse_qs(u.query)
             jid = (qs.get('id') or [''])[0]
@@ -589,6 +692,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(huawei_logout(b))
         if p == '/api/huawei/prepare':
             return self._json(huawei_prepare(b))
+        if p == '/api/oppo/logout':
+            return self._json(oppo_logout(b))
+        if p == '/api/net/restore':
+            return self._json(net_restore(b))
         if p == '/api/quit':
             threading.Thread(target=lambda: (time.sleep(0.3), os._exit(0)),
                              daemon=True).start()

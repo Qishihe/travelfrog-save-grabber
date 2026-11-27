@@ -33,11 +33,55 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+# 游戏窗口可能不在默认显示（MuMu KeepAlive 会开虚拟 display）：
+# 截屏 / 点击 / 焦点判断统一走 game_display，避免"看默认屏、点默认屏"误判黑屏。
+try:
+    import game_display as disp
+except Exception:
+    disp = None
+
+if disp is None:  # 老目录只替换了 museum.py 时也能按原来的默认屏继续跑
+    class _DefaultDisplay(object):
+        def setup(self, *args):
+            pass
+
+        def info(self):
+            return '默认显示 display 0（兼容模式）'
+
+        def screencap(self):
+            if not ADB[0] or not SER[0]:
+                return b''
+            try:
+                p = subprocess.run([ADB[0], '-s', SER[0], 'exec-out',
+                                    'screencap', '-p'], capture_output=True, timeout=40)
+                data = p.stdout or b''
+                return data if data[:8] == b'\x89PNG\r\n\x1a\n' else b''
+            except Exception:
+                return b''
+
+        def tap_base(self, x, y):
+            _sh('input tap %d %d' % (int(x), int(y)))
+            return True
+
+        def focus(self):
+            return _sh('dumpsys window 2>/dev/null | grep -m1 -i mCurrentFocus')
+
+        def is_top(self, pkg):
+            return bool(_sh('pidof %s' % pkg)) and (
+                pkg.lower() in _sh('dumpsys window | grep -i mCurrentFocus').lower())
+
+    disp = _DefaultDisplay()
+
 # ---- 坐标（900x1600 基准，按真实分辨率自动缩放）----
 TAP_MENU = (790, 65)       # 右上「菜单」（三叶草条右侧）
 TAP_STORAGE = (700, 65)    # 展开后的「小仓库」
 TAP_BLANK = (450, 1450)    # 空白处（草地/地面），用来关掉遗留弹窗
-TAP_ENTER = (450, 1143)    # 启动页「点击进入游戏」
+# 启动页「点击进入游戏」——不同渠道服位置不同：
+#   官服/米服/华为：y≈1143（底部）
+#   b 站服：        y≈960 （青蛙下方，实测点 1143 落在空白处进不去）
+# _recover_splash 会按顺序都点一遍，命中哪个算哪个。
+TAP_ENTER = (450, 1143)
+TAP_ENTER_CANDIDATES = [(450, 960), (450, 1143)]
 TAP_BACK = (82, 60)        # 二级页面（博物馆/手工品/相册）左上角「返回」
                            # 注意：这游戏的系统返回键是死的，keyevent 4 按了页面不动
 
@@ -59,10 +103,15 @@ ADB = [None]
 SER = [None]
 
 
-def setup(adb_bin, serial):
-    """注入 adb 路径与设备 serial（由 grab_official 调用）。"""
+def setup(adb_bin, serial, pkg=None):
+    """注入 adb 路径与设备 serial（由 grab_official 调用）。
+
+    pkg 不为空时顺带把游戏显示绑定给 game_display——KeepAlive 虚拟显示必须
+    按窗口现查，不能继续截默认屏 / 点默认屏。
+    """
     ADB[0] = adb_bin
     SER[0] = serial
+    disp.setup(adb_bin, serial, pkg)
 
 
 def _sh(cmd, t=90):
@@ -89,16 +138,13 @@ def _size():
 
 
 def _screen_png():
-    """截屏 PNG 字节；失败返回空。"""
-    if not ADB[0] or not SER[0]:
-        return b''
-    try:
-        p = subprocess.run([ADB[0], '-s', SER[0], 'exec-out', 'screencap', '-p'],
-                           capture_output=True, timeout=40)
-        data = p.stdout or b''
-        return data if data[:8] == b'\x89PNG\r\n\x1a\n' else b''
-    except Exception:
-        return b''
+    """截【游戏所在显示】的 PNG 字节；失败返回空。
+
+    以前的 exec-out screencap -p 永远截默认屏：MuMu KeepAlive 下默认屏是桌面，
+    另一块副屏还可能是全黑，正好命中下面的黑屏判据。现在交给 game_display
+    按游戏窗口定位物理 display，找不到时自动退回默认屏。
+    """
+    return disp.screencap()
 
 
 def screen_stats():
@@ -204,9 +250,9 @@ def _back_to_scene(tries=2):
 
 
 def _tap(xy, wait=1.2):
-    """按 900x1600 基准坐标点按，自动按真实分辨率缩放。"""
+    """按 900x1600 基准坐标点按，自动缩放并在【游戏所在显示】上派发。"""
     w, h = _size()
-    _sh('input tap %d %d' % (int(xy[0] * w / 900), int(xy[1] * h / 1600)))
+    disp.tap_base(int(xy[0] * w / 900), int(xy[1] * h / 1600))
     time.sleep(wait)
 
 
@@ -218,31 +264,40 @@ def _dismiss_popups():
 
 
 def _focus():
-    return _sh("dumpsys window 2>/dev/null | grep -m1 -i mCurrentFocus")
+    """跨显示读焦点：默认屏第一行常是 null，不能只看它。"""
+    return disp.focus()
 
 
 def ensure_foreground(pkg, wait=18):
     """确保游戏在前台且不是黑屏。
 
-    华为渠道服走 ARM 转译 + 加固壳，偶尔会在启动/切页时黑屏或掉回桌面
-    （logcat 里就是一句 Force stopping ... app died, no saved state）。
-    掉出去时点哪儿都白点，所以进博物馆前先把游戏拉回前台。
+    两个必须避开的坑：
+      1) MuMu KeepAlive 把游戏放到虚拟 display，默认屏的 mCurrentFocus 是 null、
+         截图是桌面/黑副屏；只看默认屏会误判「不在前台（黑屏）」并疯狂 am start，
+         在虚拟显示里叠出多个 MainActivity，最后界面假死。
+      2) 华为渠道服走 ARM 转译 + 加固壳，偶尔确实会黑屏/掉回桌面。
+
+    所以：前台判断用进程 + topResumedActivity/焦点（game_display.is_top），
+    只在真的掉出前台时拉起一次；截屏也走游戏所在的显示。
     """
-    focus = _focus()
+    disp.setup(ADB[0], SER[0], pkg)
     st = screen_stats()
     black = bool(st and st['brightness'] < 0.05 and st['dark'] > 0.70)
-    if pkg.lower() in focus.lower() and not black:
+    if disp.is_top(pkg) and not black:
         return True
     print('   [!] 游戏不在前台%s，重新拉起…' % ('（黑屏）' if black else ''))
     _sh('am start -n %s/com.Aligames.lxqw.MainActivity' % pkg, t=40)
     t0 = time.time()
     while time.time() - t0 < wait:
         time.sleep(3)
+        if not disp.is_top(pkg):
+            continue
         st = screen_stats()
         if st and not (st['brightness'] < 0.05 and st['dark'] > 0.70):
             time.sleep(1)
             return True
-    return False
+    # 进程还在就别再拉第二次（重复 am start 是界面假死的直接原因）。
+    return disp.is_top(pkg)
 
 
 def _recover_splash(tries=3, wait=10):
@@ -260,7 +315,12 @@ def _recover_splash(tries=3, wait=10):
             return True
         if k == 0:
             print('   还在启动页/加载页，点「进入游戏」等它（最多 %d 秒）…' % (tries * wait))
-        _tap(TAP_ENTER, wait)
+        # 各渠道服「进入游戏」按钮位置不同，逐个点；点完若已离开启动页就别再点下一个
+        for xy in TAP_ENTER_CANDIDATES:
+            _tap(xy, wait)
+            st2 = screen_stats()
+            if st2 and not (st2['brightness'] > SPLASH_BRIGHT and st2['beige'] < SPLASH_BEIGE):
+                break
     st = screen_stats()
     return bool(st) and not (st['brightness'] > SPLASH_BRIGHT and st['beige'] < SPLASH_BEIGE)
 
@@ -272,6 +332,9 @@ def visit(pkg=None, retries=3):
     中途还可能被弹窗吃掉点击、或游戏黑屏掉回桌面。所以每轮都先确认游戏在前台，
     再逐步截图核对，失败整套重来。失败不影响主流程（藏品退回底稿兜底）。
     """
+    disp.setup(ADB[0], SER[0], pkg)
+    if pkg:
+        print('   博物馆导航：%s' % disp.info())
     if screen_stats() is None:
         # 截不了图：退回盲点一遍，结果交给「有没有 museum_list」验证
         _dismiss_popups()
