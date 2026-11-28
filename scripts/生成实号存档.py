@@ -105,6 +105,35 @@ def map_role(save, protos, keep_achieves=False):
     return '昵称/三叶草/抽奖券/称号 %s -> %s' % (before, after)
 
 
+def map_create_time(save, protos):
+    """注册时间：官服/米服 client.load_role 的 misc.create_time（Unix 秒）。
+
+    两个时间分开存，互不覆盖：
+      · officialCreateTime = 官服账号真实注册时间（本协议抓到的，权威）
+      · createTime         = 单机版本来的注册时间（底稿/旧档原值）
+    单机版游戏读顶层 createTime 映射回 misc.create_time，年报「某年某月某日，
+    小青蛙背上背包，开启了第一次旅行」用的就是它。编辑器「时间记录」页同时
+    显示这两个时间，并提供「同步为官服时间」按钮把 createTime 对齐官服；
+    是否同步由玩家决定，生成脚本不再替他做主。
+    """
+    d = data_of(protos, 'client.load_role') or {}
+    ct = (d.get('misc') or {}).get('create_time')
+    if ct is None:
+        d2 = data_of(protos, 'unknown_5') or {}      # 年报统计协议也带 create_time
+        ct = d2.get('create_time')
+    try:
+        ct = int(ct)
+    except (TypeError, ValueError):
+        return '跳过：协议里没有可用的 create_time'
+    if ct < 1000000000 or ct > 2000000000:
+        return '跳过：create_time %s 不像 Unix 秒' % ct
+    old = save.get('createTime')
+    save['officialCreateTime'] = ct
+    return ('官服注册时间 officialCreateTime=%s（%s）；单机版 createTime=%s（保留，'
+            '编辑器可一键同步为官服时间）'
+            % (ct, time.strftime('%Y-%m-%d', time.localtime(ct)), old))
+
+
 def map_items(save, protos):
     d = data_of(protos, 'item.load_items')
     if not d:
@@ -963,6 +992,7 @@ def map_moment(save, protos, with_moment=False):
 
 MODULES = [
     ('身份/货币', lambda s, p, a: map_role(s, p, a.keep_achieves)),
+    ('注册时间',  lambda s, p, a: map_create_time(s, p)),
     ('三叶草田', lambda s, p, a: map_clovers(s, p)),
     ('庭院花盆', lambda s, p, a: map_garden(s, p)),
     ('床边花瓶', lambda s, p, a: map_decoration(s, p, not a.no_decoration)),

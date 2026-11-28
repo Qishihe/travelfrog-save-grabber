@@ -623,7 +623,7 @@ code{background:#eef2ec;padding:1px 5px;border-radius:4px;font-size:12px;font-fa
       return api('/api/devices').then(function(dev){
         renderBadges(st, dev);
         if (showToast) toast(dev && dev.ok ? '已重新检测模拟器' : '检测失败，请确认模拟器已启动');
-        $('prepHint').textContent = '程序版本 v' + (st.version || '2.7');
+        $('prepHint').textContent = '程序版本 v' + (st.version || '2.8');
         hwLoad(false);
         oppoLoad(false);
         netLoad(false);

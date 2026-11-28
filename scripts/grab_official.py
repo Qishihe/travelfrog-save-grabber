@@ -1255,6 +1255,34 @@ def main():
         PROC[0] = None
 
         print('\n[5/5] 解析协议 + 生成存档...')
+        # 先把本次抓取的「全部游戏传输原始数据」原样留下，以后想补挖任何字段
+        # （比如官服注册时间 create_time）都不必重新抓包。只按 cmd 拆 JSON 会丢
+        # 非 JSON / 未知协议的消息，这里把帧流和逐条消息都保留。
+        try:
+            raw_dir = os.path.join(out_dir, '原始传输_完整数据')
+            os.makedirs(raw_dir, exist_ok=True)
+            if MITM not in sys.path:
+                sys.path.insert(0, MITM)
+            import parse_ws as _pw
+            _nmsg = 0
+            with open(os.path.join(raw_dir, '_全部消息.jsonl'), 'w', encoding='utf-8') as _fa:
+                for _sd in sessions:
+                    _tag = os.path.basename(_sd)
+                    # 帧级原样备份：c2s(请求) / s2c(响应) / 握手 / 元信息，方向、顺序、边界完整
+                    for _fn in ('c2s.bin', 's2c.bin', 'handshake.txt', 'meta.txt'):
+                        _src = os.path.join(_sd, _fn)
+                        if os.path.isfile(_src):
+                            shutil.copy2(_src, os.path.join(raw_dir, _tag + '_' + _fn))
+                    # s2c 每条消息逐条落盘（含非 JSON / 未知 cmd），按到达顺序
+                    _s2c = os.path.join(_sd, 's2c.bin')
+                    if os.path.isfile(_s2c):
+                        for _m in _pw.messages(_s2c):
+                            _fa.write(_tag + '\t' + _m.replace('\n', ' ') + '\n')
+                            _nmsg += 1
+            print('   原始传输已保存：%d 条消息 -> %s' % (_nmsg, raw_dir))
+        except Exception as _e:
+            print('   [!] 原始传输备份失败：%s' % _e)
+
         n = parse_sessions(sessions, proto_dir)
         try:
             _merged = merge_injected_logs(sessions, proto_dir)

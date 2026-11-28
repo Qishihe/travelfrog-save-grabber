@@ -429,6 +429,13 @@ PASSTHROUGH_SUFFIXES = (
     'xiaomi.com', 'mi.com', 'miui.com', 'mi-img.com',
     # 华为 / 荣耀
     'huawei.com', 'hicloud.com', 'dbankcloud.com', 'dbankcdn.com', 'honor.com',
+    # 灵犀互娱 / 米服渠道 SDK（2026-11-27）：跟存档协议无关，但被 --host-all 解密后
+    # SDK 自签证书链校验失败，游戏永远卡在灵犀启动页。透传它们游戏才能正常进主界面。
+    'lingxigames.com', 'flysdk.cn', 'mumu.163.com', 'mumu.nie.netease.com',
+    'taobao.com', 'tmall.com', 'alipay.com',
+    # 统计/热修复 SDK（友盟/阿里云/UC/灵犀热更），解密会破坏其证书链
+    'umeng.com', 'umengcloud.com', 'aliyuncs.com', 'uc.cn',
+    'migames.com', 'ali-lxqw-hotfix.ejoy.com',
 )
 
 
